@@ -1,4 +1,5 @@
 using System.Numerics;
+using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using OpenTK.Graphics.OpenGL4;
 using OpenTK.WinForms;
@@ -8,6 +9,15 @@ namespace _3MFTool.Rendering;
 
 public class ViewportControl : GLControl
 {
+    // P/Invoke for reliable keyboard state detection
+    [DllImport("user32.dll")]
+    private static extern short GetAsyncKeyState(int vKey);
+    private const int VK_MENU = 0x12;    // Alt
+    private const int VK_CONTROL = 0x11; // Ctrl
+    private const int VK_SHIFT = 0x10;   // Shift
+    
+    private static bool IsKeyDown(int vKey) => (GetAsyncKeyState(vKey) & 0x8000) != 0;
+    
     // Core state
     private bool _initialized;
     private Mesh? _mesh;
@@ -24,21 +34,28 @@ public class ViewportControl : GLControl
     public bool ShowWireframe { get; set; }
     public bool ShowSubdivisions { get; set; }
     public bool ShowTexture { get; set; }
+    public bool ShowQuantizedTexture { get; set; }
     public bool FlipTextureH { get; set; }
     public bool FlipTextureV { get; set; }
     
+    // Paint mode
+    public bool PaintEnabled { get; set; } = false;  // Off by default to prevent accidental painting
+    
     // Texture
     private int _textureId;
+    private int _quantizedTextureId;
     private bool _hasTexture;
+    private bool _hasQuantizedTexture;
     
     // Brush state
     private Models.Brush _brush = new() { Radius = 0.5f };
     private int _currentColor = 0;  // 0-based: matches first extruder
+    private int _maxPaintColor = 7; // Maximum allowed color index (0-7 = 8 colors)
     private PaintTool _tool = PaintTool.Paint;
     
     // Input state
     private bool _lmb, _rmb, _mmb;
-    private bool _shift, _ctrl, _alt, _maskKey;
+    private bool _shift, _ctrl, _alt;
     private System.Drawing.Point _lastMouse;
     
     // Hover state
@@ -99,9 +116,17 @@ public class ViewportControl : GLControl
     // Public API
     // =========================================================================
     
-    public void SetMesh(Mesh mesh)
+    public void SetMesh(Mesh? mesh)
     {
         _mesh = mesh;
+        if (mesh == null)
+        {
+            _grid = null;
+            _brush.SetMesh(null, null);
+            _undoManager.SetMesh(null);
+            Invalidate(); // Refresh viewport to clear display
+            return;
+        }
         _grid = new SpatialGrid(mesh);
         _grid.Build();
         _brush.SetMesh(mesh, _grid);
@@ -113,10 +138,18 @@ public class ViewportControl : GLControl
     /// <summary>
     /// Set mesh and palette together - use after projection to avoid double-rebuild
     /// </summary>
-    public void SetMeshWithPalette(Mesh mesh, Vector3[] palette)
+    public void SetMeshWithPalette(Mesh? mesh, Vector3[] palette)
     {
         _mesh = mesh;
         _palette = palette;
+        if (mesh == null)
+        {
+            _grid = null;
+            _brush.SetMesh(null, null);
+            _undoManager.SetMesh(null);
+            Invalidate(); // Refresh viewport to clear display
+            return;
+        }
         _grid = new SpatialGrid(mesh);
         _grid.Build();
         _brush.SetMesh(mesh, _grid);
@@ -132,8 +165,31 @@ public class ViewportControl : GLControl
     }
 
     public void SetCurrentColor(int c) => _currentColor = c;
+    public void SetMaxPaintColor(int max) => _maxPaintColor = Math.Clamp(max, 0, 7);
     public void SetTool(PaintTool t) { _tool = t; UpdateActiveTool(); }
     public void SetBrushRadius(float r) { _brush.Radius = r; Invalidate(); }
+
+    /// <summary>
+    /// Begin a bulk operation that modifies many triangles at once.
+    /// Call before making changes, then call EndBulkOperation after.
+    /// </summary>
+    public void BeginBulkOperation()
+    {
+        if (_mesh == null) return;
+        _undoManager.BeginStroke();
+        
+        // Mark ALL triangles as potentially modified
+        for (int i = 0; i < _mesh.Triangles.Count; i++)
+            _undoManager.MarkTriangleModified(i);
+    }
+    
+    /// <summary>
+    /// End a bulk operation and commit to undo history.
+    /// </summary>
+    public void EndBulkOperation()
+    {
+        _undoManager.EndStroke();
+    }
 
     public bool Undo()
     {
@@ -187,7 +243,61 @@ public class ViewportControl : GLControl
         Invalidate();
     }
 
+    public void SetQuantizedTexture(byte[] rgba, int w, int h)
+    {
+        if (!_initialized) return;
+        MakeCurrent();
+        
+        if (_quantizedTextureId != 0) GL.DeleteTexture(_quantizedTextureId);
+        _quantizedTextureId = GL.GenTexture();
+        GL.BindTexture(TextureTarget.Texture2D, _quantizedTextureId);
+        GL.TexImage2D(TextureTarget.Texture2D, 0, PixelInternalFormat.Rgba, w, h, 0, PixelFormat.Rgba, PixelType.UnsignedByte, rgba);
+        GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)TextureMinFilter.Nearest); // Nearest for crisp colors
+        GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)TextureMagFilter.Nearest);
+        GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS, (int)TextureWrapMode.Repeat);
+        GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT, (int)TextureWrapMode.Repeat);
+        GL.BindTexture(TextureTarget.Texture2D, 0);
+        _hasQuantizedTexture = true;
+        Invalidate();
+    }
+
+    public void ClearQuantizedTexture()
+    {
+        if (!_initialized) return;
+        MakeCurrent();
+        if (_quantizedTextureId != 0)
+        {
+            GL.DeleteTexture(_quantizedTextureId);
+            _quantizedTextureId = 0;
+        }
+        _hasQuantizedTexture = false;
+        ShowQuantizedTexture = false;
+        Invalidate();
+    }
+
+    public void ClearTextures()
+    {
+        if (!_initialized) return;
+        MakeCurrent();
+        if (_textureId != 0)
+        {
+            GL.DeleteTexture(_textureId);
+            _textureId = 0;
+        }
+        if (_quantizedTextureId != 0)
+        {
+            GL.DeleteTexture(_quantizedTextureId);
+            _quantizedTextureId = 0;
+        }
+        _hasTexture = false;
+        _hasQuantizedTexture = false;
+        ShowQuantizedTexture = false;
+        ShowTexture = false;
+        Invalidate();
+    }
+
     public bool HasTexture => _hasTexture;
+    public bool HasQuantizedTexture => _hasQuantizedTexture;
 
     public void RebuildVBO(bool buildSubdivEdges = false)
     {
@@ -216,8 +326,18 @@ public class ViewportControl : GLControl
         var mvp = model * view * proj;
         var lightDir = Vector3.Normalize(new Vector3(-0.5f, -1f, -0.3f));
         
+        // Choose which texture to display
+        int texId = _textureId;
+        bool showTex = ShowTexture && _hasTexture;
+        
+        if (ShowQuantizedTexture && _hasQuantizedTexture)
+        {
+            texId = _quantizedTextureId;
+            showTex = true;
+        }
+        
         _renderer.Draw(mvp, model, lightDir, _camera.Position,
-            _textureId, ShowTexture && _hasTexture, FlipTextureH, FlipTextureV);
+            texId, showTex, FlipTextureH, FlipTextureV);
         
         if (ShowWireframe)
             _renderer.DrawWireframe(mvp, new Vector3(0.9f, 0.9f, 0.9f));
@@ -225,13 +345,16 @@ public class ViewportControl : GLControl
         if (ShowSubdivisions)
             _renderer.DrawSubdivisionEdges(mvp, new Vector3(0.3f, 0.8f, 1.0f));
         
-        // Draw paint preview circles during stroke
-        foreach (var (pos, radius, color) in _paintPreview)
-            _brushRenderer.Draw(pos, radius, view, proj, color);
+        // Draw paint preview circles during stroke (only when painting)
+        if (PaintEnabled)
+        {
+            foreach (var (pos, radius, color) in _paintPreview)
+                _brushRenderer.Draw(pos, radius, view, proj, color);
         
-        // Draw brush indicator
-        if (_hoverTri >= 0)
-            _brushRenderer.Draw(_hoverPos, _brush.Radius, view, proj, GetToolColor());
+            // Draw brush indicator (only when paint mode is on)
+            if (_hoverTri >= 0)
+                _brushRenderer.Draw(_hoverPos, _brush.Radius, view, proj, GetToolColor());
+        }
         
         SwapBuffers();
     }
@@ -257,7 +380,9 @@ public class ViewportControl : GLControl
 
     private PaintTool GetActiveTool()
     {
-        if (_maskKey) return _shift ? PaintTool.Unmask : PaintTool.Mask;
+        // Ctrl+Alt = Unmask, Ctrl alone = Mask
+        if (_ctrl && _alt) return PaintTool.Unmask;
+        if (_ctrl) return PaintTool.Mask;
         if (_shift && _tool == PaintTool.Paint) return PaintTool.Erase;
         return _tool;
     }
@@ -282,41 +407,46 @@ public class ViewportControl : GLControl
         if (e.Button == MouseButtons.Right) _rmb = true;
         if (e.Button == MouseButtons.Middle) _mmb = true;
         
-        // Use actual keyboard state
-        bool altNow = (Control.ModifierKeys & Keys.Alt) != 0;
+        // Use GetAsyncKeyState for reliable keyboard state
+        bool ctrlNow = IsKeyDown(VK_CONTROL);
+        bool altNow = IsKeyDown(VK_MENU);
+        _ctrl = ctrlNow;
+        _alt = altNow;
+        _shift = IsKeyDown(VK_SHIFT);
         
-        // Start painting
-        if (_lmb && !altNow && _mesh != null && _hoverTri >= 0)
+        // Alt alone = orbit mode (don't paint)
+        // Ctrl+Alt = Unmask (should paint)
+        // Ctrl alone = Mask (should paint)
+        bool isOrbitMode = altNow && !ctrlNow;
+        
+        // Start painting (only if paint mode is enabled and not in orbit mode)
+        if (_lmb && !isOrbitMode && _mesh != null && _hoverTri >= 0 && PaintEnabled)
         {
-            var active = GetActiveTool();
-            if (active == PaintTool.Eyedropper)
-            {
-                var tri = _mesh.Triangles[_hoverTri];
-                if (tri.PaintData.Count > 0) ColorPicked?.Invoke(tri.PaintData[0].ExtruderId);
-            }
-            else
-            {
-                _painting = true;
-                _strokeDirty = false;
-                _hasLastPaint = false;
-                _paintPreview.Clear();
-                
-                // Begin undo capture
-                _undoManager.BeginStroke();
-                
-                // Add preview point
-                AddPreviewPoint(_hoverPos);
-                
-                ApplyPaint(_hoverPos);
-                _lastPaintPos = _hoverPos;
-                _hasLastPaint = true;
-            }
+            _painting = true;
+            _strokeDirty = false;
+            _hasLastPaint = false;
+            _paintPreview.Clear();
+            
+            // Begin undo capture
+            _undoManager.BeginStroke();
+            
+            // Add preview point
+            AddPreviewPoint(_hoverPos);
+            
+            ApplyPaint(_hoverPos);
+            _lastPaintPos = _hoverPos;
+            _hasLastPaint = true;
         }
     }
 
     protected override void OnMouseUp(MouseEventArgs e)
     {
         base.OnMouseUp(e);
+        
+        // Use GetAsyncKeyState for reliable keyboard state
+        _alt = IsKeyDown(VK_MENU);
+        _ctrl = IsKeyDown(VK_CONTROL);
+        _shift = IsKeyDown(VK_SHIFT);
         
         if (e.Button == MouseButtons.Left)
         {
@@ -362,11 +492,17 @@ public class ViewportControl : GLControl
     protected override void OnMouseMove(MouseEventArgs e)
     {
         base.OnMouseMove(e);
+        
+        // Use GetAsyncKeyState for reliable keyboard state (fixes stuck Alt in WPF/WinForms interop)
+        _alt = IsKeyDown(VK_MENU);
+        _ctrl = IsKeyDown(VK_CONTROL);
+        _shift = IsKeyDown(VK_SHIFT);
+        
         int dx = e.X - _lastMouse.X;
         int dy = e.Y - _lastMouse.Y;
         
-        // Use actual keyboard state (not tracked state which can get stale)
-        bool altNow = (Control.ModifierKeys & Keys.Alt) != 0;
+        // Use actual keyboard state
+        bool altNow = _alt;
         
         // Camera controls - match Python viewport exactly
         if (_rmb && !altNow)
@@ -415,12 +551,19 @@ public class ViewportControl : GLControl
     {
         base.OnMouseWheel(e);
         
-        // Check actual keyboard state at this moment (not tracked state which can get stale)
-        bool altNow = (Control.ModifierKeys & Keys.Alt) != 0;
+        // Use GetAsyncKeyState for reliable keyboard state (fixes stuck Alt in WPF/WinForms interop)
+        bool altNow = IsKeyDown(VK_MENU);
+        bool ctrlNow = IsKeyDown(VK_CONTROL);
+        bool shiftNow = IsKeyDown(VK_SHIFT);
+        
+        // Sync tracked state with hardware state
+        _alt = altNow;
+        _ctrl = ctrlNow;
+        _shift = shiftNow;
         
         if (altNow)
         {
-            // Alt+Scroll = Brush resize (matches Python)
+            // Alt+Scroll = Brush resize
             float scaleFactor = 1.0f + (e.Delta / 1200f);
             scaleFactor = Math.Clamp(scaleFactor, 0.5f, 2.0f);
             _brush.Radius = Math.Clamp(_brush.Radius * scaleFactor, 0.001f, 100f);
@@ -429,9 +572,10 @@ public class ViewportControl : GLControl
         }
         else
         {
-            // Normal scroll = Zoom (matches Python: factor 1.1/0.9)
+            // Normal scroll = Zoom
             _camera.DoZoom(e.Delta);
         }
+        
         Invalidate();
     }
 
@@ -447,7 +591,6 @@ public class ViewportControl : GLControl
         if (e.KeyCode == Keys.ShiftKey && !_shift) { _shift = true; changed = true; }
         if (e.KeyCode == Keys.ControlKey && !_ctrl) { _ctrl = true; changed = true; }
         if (e.KeyCode == Keys.Menu && !_alt) { _alt = true; changed = true; }
-        if (e.KeyCode == Keys.M && !_maskKey) { _maskKey = true; changed = true; }
         
         if (changed) UpdateActiveTool();
     }
@@ -460,7 +603,6 @@ public class ViewportControl : GLControl
         if (e.KeyCode == Keys.ShiftKey) { _shift = false; changed = true; }
         if (e.KeyCode == Keys.ControlKey) { _ctrl = false; changed = true; }
         if (e.KeyCode == Keys.Menu) { _alt = false; changed = true; }
-        if (e.KeyCode == Keys.M) { _maskKey = false; changed = true; }
         
         if (changed) UpdateActiveTool();
     }
@@ -480,7 +622,14 @@ public class ViewportControl : GLControl
                 return true;
             case Keys.B: _tool = PaintTool.Paint; UpdateActiveTool(); return true;
             case Keys.E: _tool = PaintTool.Erase; UpdateActiveTool(); return true;
-            case Keys.I: _tool = PaintTool.Eyedropper; UpdateActiveTool(); return true;
+            case Keys.C:
+                // Instant eyedropper - pick color under cursor without changing tool mode
+                if (_mesh != null && _hoverTri >= 0)
+                {
+                    var tri = _mesh.Triangles[_hoverTri];
+                    if (tri.PaintData.Count > 0) ColorPicked?.Invoke(tri.PaintData[0].ExtruderId);
+                }
+                return true;
             case Keys.D1: case Keys.D2: case Keys.D3: case Keys.D4:
             case Keys.D5: case Keys.D6: case Keys.D7: case Keys.D8:
                 // D1 = first color (index 0), D2 = second color (index 1), etc.
@@ -556,6 +705,9 @@ public class ViewportControl : GLControl
         
         var active = GetActiveTool();
         
+        // Clamp color to max allowed (respects extruder limit)
+        int paintColor = Math.Min(_currentColor, _maxPaintColor);
+        
         // For small brushes, find triangles by searching from position directly
         _brush.SetPosition(pos, _hoverNorm, _hoverTri);
         
@@ -568,7 +720,7 @@ public class ViewportControl : GLControl
         
         // Apply paint
         foreach (int i in affected)
-            _brush.ApplyPaint(i, active, _currentColor);
+            _brush.ApplyPaint(i, active, paintColor);
         
         if (affected.Count > 0) _strokeDirty = true;
     }
@@ -586,12 +738,36 @@ public class ViewportControl : GLControl
     protected override void OnGotFocus(EventArgs e)
     {
         base.OnGotFocus(e);
-        // Sync modifier state with actual keyboard
-        var modifiers = Control.ModifierKeys;
-        _shift = (modifiers & Keys.Shift) != 0;
-        _ctrl = (modifiers & Keys.Control) != 0;
-        _alt = (modifiers & Keys.Alt) != 0;
+        // Use GetAsyncKeyState for reliable keyboard state
+        _shift = IsKeyDown(VK_SHIFT);
+        _ctrl = IsKeyDown(VK_CONTROL);
+        _alt = IsKeyDown(VK_MENU);
         UpdateActiveTool();
+    }
+
+    /// <summary>
+    /// Public method to reset input state - called from WPF when modifier keys are released
+    /// </summary>
+    public void ResetInputState()
+    {
+        // Use GetAsyncKeyState to get actual hardware state
+        _shift = IsKeyDown(VK_SHIFT);
+        _ctrl = IsKeyDown(VK_CONTROL);
+        _alt = IsKeyDown(VK_MENU);
+        UpdateActiveTool();
+        Invalidate();
+    }
+    
+    /// <summary>
+    /// Force sync with actual keyboard state
+    /// </summary>
+    public void SyncModifierState()
+    {
+        _shift = IsKeyDown(VK_SHIFT);
+        _ctrl = IsKeyDown(VK_CONTROL);
+        _alt = IsKeyDown(VK_MENU);
+        UpdateActiveTool();
+        Invalidate();
     }
 
     private void ResetModifierKeys()
@@ -599,7 +775,6 @@ public class ViewportControl : GLControl
         _shift = false;
         _ctrl = false;
         _alt = false;
-        _maskKey = false;
         _lmb = false;
         _rmb = false;
         _mmb = false;
@@ -631,6 +806,7 @@ public class ViewportControl : GLControl
             _renderer?.Dispose();
             _brushRenderer?.Dispose();
             if (_textureId != 0) GL.DeleteTexture(_textureId);
+            if (_quantizedTextureId != 0) GL.DeleteTexture(_quantizedTextureId);
         }
         base.Dispose(disposing);
     }

@@ -84,6 +84,7 @@ public class Mesh
     public Vector3 Center { get; private set; }
     public float BoundingRadius { get; private set; }
     public string? TexturePath { get; set; }
+    public Vector3[]? DetectedPalette { get; set; } // Palette detected from vertex colors on import
     public int TotalSubTriangles => Triangles.Sum(t => t.SubTriangleCount);
 
     public void ComputeBounds()

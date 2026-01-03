@@ -6,6 +6,7 @@ public class Brush
 {
     public float Radius { get; set; } = 0.5f;
     public bool AutoSubdivide { get; set; } = true;
+    public bool UseNormalMasking { get; set; } = true; // Prevents painting through mesh
     
     public Vector3 Position { get; private set; }
     public Vector3 Normal { get; private set; }
@@ -15,12 +16,19 @@ public class Brush
     private Mesh? _mesh;
     private float _meshSize = 1f;
 
-    public void SetMesh(Mesh mesh, SpatialGrid grid)
+    public void SetMesh(Mesh? mesh, SpatialGrid? grid)
     {
         _mesh = mesh;
         _spatialGrid = grid;
-        _meshSize = mesh.BoundingRadius * 2f;
-        if (_meshSize < 0.001f) _meshSize = 1f;
+        if (mesh != null)
+        {
+            _meshSize = mesh.BoundingRadius * 2f;
+            if (_meshSize < 0.001f) _meshSize = 1f;
+        }
+        else
+        {
+            _meshSize = 1f;
+        }
     }
 
     public void SetPosition(Vector3 position, Vector3 normal, int triangleIndex)
@@ -65,14 +73,24 @@ public class Brush
 
         float radiusSq = Radius * Radius;
         
-        // Search radius - at least 10% of mesh size
-        float searchRadius = Math.Max(Radius * 3f, _meshSize * 0.1f);
+        // High-poly optimization: tighter search radius for small brushes
+        float searchRadius = Math.Max(Radius * 2f, _meshSize * 0.05f);
         var candidates = _spatialGrid.FindTrianglesInRadius(pos, searchRadius);
+        
+        // Pre-calculate normal check
+        bool checkNormal = UseNormalMasking && Normal != Vector3.Zero;
 
         foreach (int triIdx in candidates)
         {
             var tri = _mesh.Triangles[triIdx];
             if (!ignoreMask && tri.Masked) continue;
+            
+            // Normal check: skip triangles facing away from brush
+            if (checkNormal)
+            {
+                // Dot > 0 means facing same direction as brush normal
+                if (Vector3.Dot(tri.Normal, Normal) < 0.1f) continue;
+            }
 
             var v0 = _mesh.Vertices[tri.Indices.V0];
             var v1 = _mesh.Vertices[tri.Indices.V1];
@@ -83,31 +101,19 @@ public class Brush
                 result.Add(triIdx);
         }
         
-        // Fallback: find closest triangle if none found
-        if (result.Count == 0 && candidates.Count > 0)
+        // Fallback: always include hover triangle if we're close enough
+        if (HoverTriangleIndex >= 0 && HoverTriangleIndex < _mesh.Triangles.Count)
         {
-            int closestTri = -1;
-            float closestDist = float.MaxValue;
-            
-            foreach (int triIdx in candidates)
+            var hoverTri = _mesh.Triangles[HoverTriangleIndex];
+            if (ignoreMask || !hoverTri.Masked)
             {
-                var tri = _mesh.Triangles[triIdx];
-                if (!ignoreMask && tri.Masked) continue;
-                
-                var v0 = _mesh.Vertices[tri.Indices.V0];
-                var v1 = _mesh.Vertices[tri.Indices.V1];
-                var v2 = _mesh.Vertices[tri.Indices.V2];
-                
+                var v0 = _mesh.Vertices[hoverTri.Indices.V0];
+                var v1 = _mesh.Vertices[hoverTri.Indices.V1];
+                var v2 = _mesh.Vertices[hoverTri.Indices.V2];
                 float distSq = PointToTriangleDistSq(pos, v0, v1, v2);
-                if (distSq < closestDist)
-                {
-                    closestDist = distSq;
-                    closestTri = triIdx;
-                }
+                if (distSq <= radiusSq * 4) // Generous radius for hover
+                    result.Add(HoverTriangleIndex);
             }
-            
-            if (closestTri >= 0 && closestDist <= radiusSq * 4)
-                result.Add(closestTri);
         }
         
         return result.ToList();
@@ -264,6 +270,7 @@ public class Brush
 
     /// <summary>
     /// Inline point-to-triangle distance for hot path
+    /// Fixed: Sliver triangles now fallback to vertex distance instead of returning infinity
     /// </summary>
     private static float PointToTriangleDistSqInline(
         float px, float py, float pz,
@@ -283,7 +290,17 @@ public class Brush
         float d21 = vpx*e1x + vpy*e1y + vpz*e1z;
 
         float denom = d00 * d11 - d01 * d01;
-        if (MathF.Abs(denom) < 1e-10f) return float.MaxValue;
+        
+        // BUG FIX: Sliver/degenerate triangle detection
+        // Instead of returning infinity (which makes triangle unpaintable),
+        // fallback to minimum vertex distance
+        if (MathF.Abs(denom) < 1e-10f)
+        {
+            float dV0 = (px-t0x)*(px-t0x) + (py-t0y)*(py-t0y) + (pz-t0z)*(pz-t0z);
+            float dV1 = (px-t1x)*(px-t1x) + (py-t1y)*(py-t1y) + (pz-t1z)*(pz-t1z);
+            float dV2 = (px-t2x)*(px-t2x) + (py-t2y)*(py-t2y) + (pz-t2z)*(pz-t2z);
+            return MathF.Min(dV0, MathF.Min(dV1, dV2));
+        }
 
         float invDenom = 1f / denom;
         float v = (d11 * d20 - d01 * d21) * invDenom;

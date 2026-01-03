@@ -3,7 +3,8 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="3MF Tool - MMU Painter" Height="900" Width="1400" MinHeight="600" MinWidth="900"
         Background="{DynamicResource WindowBackgroundBrush}"
-        Loaded="Window_Loaded" Closing="Window_Closing" KeyDown="Window_KeyDown">
+        Icon="Resources/icon.ico"
+        Loaded="Window_Loaded" Closing="Window_Closing" KeyDown="Window_KeyDown" KeyUp="Window_KeyUp" PreviewKeyUp="Window_KeyUp">
     <Grid>
         <Grid.RowDefinitions>
             <RowDefinition Height="*"/>
@@ -23,8 +24,42 @@
                 <StackPanel Margin="5">
                     <GroupBox Header="File">
                         <StackPanel>
+                            <Button Content="New Scene (Ctrl+N)" Click="NewScene_Click"/>
                             <Button Content="Open Model (Ctrl+O)" Click="OpenModel_Click"/>
-                            <Button Content="Save 3MF (Ctrl+S)" Click="SaveModel_Click" x:Name="btnSave" IsEnabled="False"/>
+                            <Button Content="Save Model (Ctrl+S)" Click="SaveModel_Click" x:Name="btnSave" IsEnabled="False"/>
+                            <Separator Margin="0,5"/>
+                            <TextBlock Text="Import Scale (OBJ):" FontSize="11" Margin="0,0,0,2"/>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <ComboBox x:Name="cmbImportScale" SelectedIndex="3" SelectionChanged="ImportScale_Changed" ToolTip="Scale factor for OBJ import. 3MF always uses millimeters.">
+                                    <ComboBoxItem Content="Auto-detect"/>
+                                    <ComboBoxItem Content="m → mm (×1000)"/>
+                                    <ComboBoxItem Content="cm → mm (×10)"/>
+                                    <ComboBoxItem Content="mm (×1)"/>
+                                    <ComboBoxItem Content="in → mm (×25.4)"/>
+                                    <ComboBoxItem Content="Custom..."/>
+                                </ComboBox>
+                                <TextBox x:Name="txtCustomImportScale" Grid.Column="1" Width="50" Text="1.0" Margin="5,0,0,0" Visibility="Collapsed" ToolTip="Custom import scale factor"/>
+                            </Grid>
+                            <TextBlock Text="Export Scale (3MF):" FontSize="11" Margin="0,5,0,2"/>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <ComboBox x:Name="cmbExportScale" SelectedIndex="0" SelectionChanged="ExportScale_Changed" ToolTip="Scale factor for 3MF export. Use to correct sizing issues.">
+                                    <ComboBoxItem Content="×1 (no change)"/>
+                                    <ComboBoxItem Content="×0.001 (mm → m)"/>
+                                    <ComboBoxItem Content="×0.1 (mm → cm)"/>
+                                    <ComboBoxItem Content="×10 (cm → mm)"/>
+                                    <ComboBoxItem Content="×1000 (m → mm)"/>
+                                    <ComboBoxItem Content="Custom..."/>
+                                </ComboBox>
+                                <TextBox x:Name="txtCustomExportScale" Grid.Column="1" Width="50" Text="1.0" Margin="5,0,0,0" Visibility="Collapsed" ToolTip="Custom export scale factor"/>
+                            </Grid>
                             <Separator Margin="0,5"/>
                             <Grid>
                                 <Grid.ColumnDefinitions>
@@ -39,11 +74,11 @@
                     </GroupBox>
                     <GroupBox Header="Tools">
                         <StackPanel>
-                            <TextBlock Text="B=Paint  E=Erase  I=Eyedrop" FontSize="10" Foreground="{DynamicResource TextDimBrush}" Margin="0,0,0,5"/>
-                            <TextBlock Text="Hold M=Mask  M+Shift=Unmask" FontSize="10" Foreground="{DynamicResource TextDimBrush}" Margin="0,0,0,5"/>
+                            <ToggleButton x:Name="btnPaintMode" Content="Enable Paint Mode (P)" Click="PaintMode_Click" Margin="0,0,0,8" ToolTip="Enable painting on mesh. When off, brush is hidden and painting is disabled."/>
+                            <TextBlock Text="B=Paint  E=Erase  C=Eyedrop" FontSize="10" Foreground="{DynamicResource TextDimBrush}" Margin="0,0,0,3"/>
+                            <TextBlock Text="Ctrl+Click=Mask  Ctrl+Alt=Unmask" FontSize="10" Foreground="{DynamicResource TextDimBrush}" Margin="0,0,0,5"/>
                             <RadioButton x:Name="rbPaint" Content="Paint (B)" IsChecked="True" Checked="Tool_Changed" Tag="0" GroupName="Tools"/>
                             <RadioButton x:Name="rbErase" Content="Erase (E)" Checked="Tool_Changed" Tag="1" GroupName="Tools"/>
-                            <RadioButton x:Name="rbEyedropper" Content="Eyedropper (I)" Checked="Tool_Changed" Tag="4" GroupName="Tools"/>
                             <Separator Margin="0,8"/>
                             <TextBlock x:Name="txtActiveTool" Text="Active: Paint" FontWeight="Bold" Margin="0,0,0,5"/>
                             <Button Content="Clear All Masks" Click="ClearMasks_Click"/>
@@ -57,6 +92,18 @@
                             <WrapPanel x:Name="colorPanel" Margin="0,0,0,5"/>
                             <TextBlock x:Name="txtCurrentColor" Text="Current: 1" FontSize="11" Foreground="{DynamicResource TextDimBrush}"/>
                             <TextBlock Text="(Changes apply to model immediately)" FontSize="9" Foreground="{DynamicResource TextDimBrush}"/>
+                            <Separator Margin="0,8"/>
+                            <TextBlock Text="Limit to extruders:" FontSize="11" Margin="0,0,0,2"/>
+                            <StackPanel Orientation="Horizontal">
+                                <Slider x:Name="sliderLimitExtruders" Minimum="1" Maximum="8" Value="8" Width="80" IsSnapToTickEnabled="True" TickFrequency="1" ValueChanged="LimitExtruders_Changed"/>
+                                <TextBlock x:Name="txtLimitExtruders" Text="8" Width="20" Margin="5,0,0,0" VerticalAlignment="Center"/>
+                            </StackPanel>
+                            <TextBlock Text="Smooth (dissolve regions &lt;):" FontSize="11" Margin="0,5,0,2"/>
+                            <StackPanel Orientation="Horizontal">
+                                <Slider x:Name="sliderSmoothRadius" Minimum="0" Maximum="500" Value="20" Width="80" IsSnapToTickEnabled="True" TickFrequency="10" ValueChanged="SmoothRadius_Changed"/>
+                                <TextBlock x:Name="txtSmoothRadius" Text="20" Width="35" Margin="5,0,0,0" VerticalAlignment="Center"/>
+                            </StackPanel>
+                            <Button Content="Apply Limit" Click="ApplyExtruderLimit_Click" Margin="0,5,0,0" Padding="8,4" ToolTip="Remap colors beyond limit, dissolve small regions, black out unused slots"/>
                         </StackPanel>
                     </GroupBox>
                     <GroupBox Header="Brush">
@@ -75,6 +122,7 @@
                                 <CheckBox x:Name="chkFlipH" Content="Flip H" Checked="Display_Changed" Unchecked="Display_Changed" IsEnabled="{Binding IsChecked, ElementName=chkShowTexture}" VerticalAlignment="Center"/>
                                 <CheckBox x:Name="chkFlipV" Content="Flip V" Checked="Display_Changed" Unchecked="Display_Changed" IsEnabled="{Binding IsChecked, ElementName=chkShowTexture}" Margin="15,0,0,0" VerticalAlignment="Center"/>
                             </StackPanel>
+                            <CheckBox x:Name="chkPreviewQuantized" Content="Preview Quantized (Q)" Checked="PreviewQuantized_Changed" Unchecked="PreviewQuantized_Changed" Margin="0,4,0,0" IsEnabled="False" ToolTip="Preview quantized texture on mesh before projection"/>
                             <Separator Margin="0,8"/>
                             <Button Content="Frame Model (F)" Click="FrameModel_Click"/>
                             <Button Content="Reset View (R)" Click="ResetView_Click"/>
@@ -122,34 +170,8 @@
                             </StackPanel>
                         </StackPanel>
                     </GroupBox>
-                    <GroupBox Header="Quantization">
-                        <StackPanel>
-                            <TextBlock Text="Number of Colors:"/>
-                            <Grid>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="Auto"/>
-                                </Grid.ColumnDefinitions>
-                                <Slider x:Name="sliderNumColors" Minimum="2" Maximum="8" Value="5" IsSnapToTickEnabled="True" TickFrequency="1" ValueChanged="NumColors_Changed"/>
-                                <TextBlock x:Name="txtNumColors" Text="5" Grid.Column="1" Width="20" TextAlignment="Right" Margin="5,0,0,0"/>
-                            </Grid>
-                            <TextBlock Text="Method:" Margin="0,8,0,0"/>
-                            <ComboBox x:Name="cmbQuantizeMethod" SelectedIndex="0">
-                                <ComboBoxItem Content="Uniform"/>
-                                <ComboBoxItem Content="K-Means"/>
-                                <ComboBoxItem Content="Median Cut"/>
-                                <ComboBoxItem Content="Octree"/>
-                            </ComboBox>
-                            <Button Content="Quantize Texture" Margin="0,10,0,0" Click="Quantize_Click" x:Name="btnQuantize" IsEnabled="False"/>
-                        </StackPanel>
-                    </GroupBox>
-                    <GroupBox Header="Texture Palette (for preview)">
-                        <StackPanel>
-                            <TextBlock Text="Edit colors here, then Project to apply" FontSize="10" Foreground="{DynamicResource TextDimBrush}" Margin="0,0,0,3"/>
-                            <WrapPanel x:Name="quantizedPalettePanel" Margin="0,0,0,5"/>
-                            <Button x:Name="btnResetQuantizedColors" Content="Reset to Original" Click="ResetQuantizedColors_Click" IsEnabled="False" Padding="5,2"/>
-                        </StackPanel>
-                    </GroupBox>
+                    
+                    <!-- Projection Settings -->
                     <GroupBox Header="Projection Settings">
                         <StackPanel>
                             <TextBlock Text="Subdivision Depth:" Margin="0,0,0,2"/>
@@ -165,6 +187,131 @@
                             <Button Content="Project Texture to Mesh" Click="ProjectTexture_Click" x:Name="btnProject" IsEnabled="False"/>
                         </StackPanel>
                     </GroupBox>
+                    
+                    <!-- Color Palette -->
+                    <GroupBox Header="Color Palette">
+                        <StackPanel>
+                            <WrapPanel x:Name="quantizedPalettePanel" Margin="0,0,0,5"/>
+                            <CheckBox x:Name="chkLockPalette" Content="Lock Palette" ToolTip="Keep current colors when re-quantizing. Only color regions will update, not the colors themselves." Margin="0,0,0,5"/>
+                            <Button x:Name="btnResetQuantizedColors" Content="Reset to Original" Click="ResetQuantizedColors_Click" IsEnabled="False" Padding="5,2"/>
+                        </StackPanel>
+                    </GroupBox>
+                    
+                    <!-- Quantization Settings -->
+                    <GroupBox Header="Quantization">
+                        <StackPanel>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <ToggleButton x:Name="btnAutoQuantize" Content="Auto Quantize" Click="AutoQuantize_Click" IsEnabled="False" ToolTip="When enabled, changes to settings auto-update the quantized preview"/>
+                                <TextBlock x:Name="txtProcessing" Text="⏳" Grid.Column="1" Visibility="Collapsed" VerticalAlignment="Center" Margin="8,0" FontSize="14" ToolTip="Processing..."/>
+                                <Button x:Name="btnQuantize" Content="Quantize" Grid.Column="2" Click="Quantize_Click" IsEnabled="False" Margin="5,0,0,0" Padding="10,2"/>
+                            </Grid>
+                            <Separator Margin="0,8"/>
+                            <TextBlock Text="Colors:"/>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <Slider x:Name="sliderNumColors" Minimum="2" Maximum="8" Value="5" IsSnapToTickEnabled="True" TickFrequency="1" ValueChanged="NumColors_Changed"/>
+                                <TextBlock x:Name="txtNumColors" Text="5" Grid.Column="1" Width="20" TextAlignment="Right" Margin="5,0,0,0"/>
+                            </Grid>
+                            <TextBlock Text="Method:" Margin="0,5,0,0"/>
+                            <ComboBox x:Name="cmbQuantizeMethod" SelectedIndex="0" SelectionChanged="QuantizeMethod_Changed">
+                                <ComboBoxItem Content="Octree" ToolTip="Best for most images - groups similar colors"/>
+                                <ComboBoxItem Content="K-Means" ToolTip="Good for photos - finds optimal color clusters"/>
+                                <ComboBoxItem Content="Median Cut" ToolTip="Good for graphics - splits by color range"/>
+                                <ComboBoxItem Content="Popularity" ToolTip="Uses most frequent colors in image"/>
+                                <ComboBoxItem Content="Uniform" ToolTip="Divides color space evenly (ignores image)"/>
+                            </ComboBox>
+                            <TextBlock Text="Color Sensitivity:" Margin="0,8,0,0" ToolTip="Higher = more color separation"/>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <Slider x:Name="sliderColorWeight" Minimum="0.5" Maximum="2.0" Value="1.0" TickFrequency="0.1" ValueChanged="QuantizeParam_Changed"/>
+                                <TextBlock x:Name="txtColorWeight" Text="1.0" Grid.Column="1" Width="25" TextAlignment="Right" Margin="5,0,0,0"/>
+                            </Grid>
+                            <TextBlock Text="Popularity Bias:" Margin="0,3,0,0" ToolTip="Higher = favor dominant colors"/>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <Slider x:Name="sliderPopularityWeight" Minimum="0" Maximum="1.0" Value="0.5" TickFrequency="0.1" ValueChanged="QuantizeParam_Changed"/>
+                                <TextBlock x:Name="txtPopularityWeight" Text="0.5" Grid.Column="1" Width="25" TextAlignment="Right" Margin="5,0,0,0"/>
+                            </Grid>
+                        </StackPanel>
+                    </GroupBox>
+                    
+                    <!-- Image Preprocessing - Advanced options -->
+                    <GroupBox Header="Image Preprocessing">
+                        <StackPanel>
+                            <TextBlock Text="Gamma:" ToolTip="&lt;1 darker midtones, &gt;1 lighter midtones"/>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <Slider x:Name="sliderGamma" Minimum="0.5" Maximum="2.0" Value="1.0" TickFrequency="0.1" ValueChanged="QuantizeParam_Changed"/>
+                                <TextBlock x:Name="txtGamma" Text="1.0" Grid.Column="1" Width="25" TextAlignment="Right" Margin="5,0,0,0"/>
+                            </Grid>
+                            <TextBlock Text="Contrast:" Margin="0,3,0,0"/>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <Slider x:Name="sliderContrast" Minimum="0.5" Maximum="2.0" Value="1.0" TickFrequency="0.1" ValueChanged="QuantizeParam_Changed"/>
+                                <TextBlock x:Name="txtContrast" Text="1.0" Grid.Column="1" Width="25" TextAlignment="Right" Margin="5,0,0,0"/>
+                            </Grid>
+                            <TextBlock Text="Brightness:" Margin="0,3,0,0"/>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <Slider x:Name="sliderBrightness" Minimum="-0.5" Maximum="0.5" Value="0.0" TickFrequency="0.1" ValueChanged="QuantizeParam_Changed"/>
+                                <TextBlock x:Name="txtBrightness" Text="0.0" Grid.Column="1" Width="25" TextAlignment="Right" Margin="5,0,0,0"/>
+                            </Grid>
+                            <TextBlock Text="Saturation:" Margin="0,3,0,0"/>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <Slider x:Name="sliderSaturation" Minimum="0" Maximum="2.0" Value="1.0" TickFrequency="0.1" ValueChanged="QuantizeParam_Changed"/>
+                                <TextBlock x:Name="txtSaturation" Text="1.0" Grid.Column="1" Width="25" TextAlignment="Right" Margin="5,0,0,0"/>
+                            </Grid>
+                            <Separator Margin="0,6"/>
+                            <TextBlock Text="Shadow Compensation" FontWeight="SemiBold" Margin="0,0,0,3"/>
+                            <CheckBox x:Name="chkNormalizeLum" Content="Normalize Luminance" Checked="QuantizeCheckbox_Changed" Unchecked="QuantizeCheckbox_Changed" ToolTip="Flattens all colors to same brightness - best for extracting pure hues from shadowed images" Margin="0,2,0,0"/>
+                            <TextBlock Text="Shadow Lift:" Margin="0,5,0,0" ToolTip="Raises dark areas while preserving highlights"/>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <Slider x:Name="sliderShadowLift" Minimum="0" Maximum="1.0" Value="0.0" TickFrequency="0.1" ValueChanged="QuantizeParam_Changed"/>
+                                <TextBlock x:Name="txtShadowLift" Text="0.0" Grid.Column="1" Width="25" TextAlignment="Right" Margin="5,0,0,0"/>
+                            </Grid>
+                            <TextBlock Text="Highlight Compress:" Margin="0,3,0,0" ToolTip="Compresses bright areas while preserving darks"/>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <Slider x:Name="sliderHighlightCompress" Minimum="0" Maximum="1.0" Value="0.0" TickFrequency="0.1" ValueChanged="QuantizeParam_Changed"/>
+                                <TextBlock x:Name="txtHighlightCompress" Text="0.0" Grid.Column="1" Width="25" TextAlignment="Right" Margin="5,0,0,0"/>
+                            </Grid>
+                        </StackPanel>
+                    </GroupBox>
+                    
                     <GroupBox Header="Mesh Info">
                         <TextBlock x:Name="txtMeshInfo" Text="No mesh loaded" TextWrapping="Wrap" Foreground="{DynamicResource TextDimBrush}"/>
                     </GroupBox>

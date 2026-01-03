@@ -63,15 +63,19 @@ public static class ThreeMFIO
         if (unitMatch.Success) cache.ModelUnit = unitMatch.Groups[1].Value;
 
         progress?.Report(("Parsing vertices...", 0.4f));
-        var verts = new List<Vector3>();
+        var rawVerts = new List<Vector3>();
         foreach (Match m in Regex.Matches(modelContent, @"<vertex\s+x=""([^""]+)""\s+y=""([^""]+)""\s+z=""([^""]+)"""))
         {
             float x = float.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture);
             float y = float.Parse(m.Groups[2].Value, CultureInfo.InvariantCulture);
             float z = float.Parse(m.Groups[3].Value, CultureInfo.InvariantCulture);
-            verts.Add(new Vector3(x, z, -y)); // Z-up to Y-up
+            rawVerts.Add(new Vector3(x, z, -y)); // Z-up to Y-up
         }
-        mesh.Vertices = verts;
+        
+        // Weld duplicate vertices for clean mesh topology
+        progress?.Report(("Welding vertices...", 0.5f));
+        var (weldedVerts, indexRemap) = WeldVertices(rawVerts, 0.0001f);
+        mesh.Vertices = weldedVerts;
 
         progress?.Report(("Parsing triangles...", 0.6f));
         var triMatches = Regex.Matches(modelContent, @"<triangle\s+v1=""(\d+)""\s+v2=""(\d+)""\s+v3=""(\d+)""([^/]*)/?>");
@@ -82,7 +86,20 @@ public static class ThreeMFIO
             ct.ThrowIfCancellationRequested();
             if (++count % 10000 == 0) progress?.Report(("Parsing triangles...", 0.6f + 0.3f * count / total));
 
-            var tri = new Triangle(int.Parse(m.Groups[1].Value), int.Parse(m.Groups[2].Value), int.Parse(m.Groups[3].Value));
+            // Get original indices and remap through weld table
+            int v0 = int.Parse(m.Groups[1].Value);
+            int v1 = int.Parse(m.Groups[2].Value);
+            int v2 = int.Parse(m.Groups[3].Value);
+            
+            // Apply weld remapping
+            if (v0 < indexRemap.Length) v0 = indexRemap[v0];
+            if (v1 < indexRemap.Length) v1 = indexRemap[v1];
+            if (v2 < indexRemap.Length) v2 = indexRemap[v2];
+            
+            // Skip degenerate triangles (collapsed by welding)
+            if (v0 == v1 || v1 == v2 || v2 == v0) continue;
+            
+            var tri = new Triangle(v0, v1, v2);
             var mmuMatch = Regex.Match(m.Groups[4].Value, @"mmu_segmentation=""([^""]*)""");
             if (mmuMatch.Success && !string.IsNullOrEmpty(mmuMatch.Groups[1].Value))
             {
@@ -107,10 +124,10 @@ public static class ThreeMFIO
         return mesh;
     }
 
-    public static async Task<bool> SaveAsync(string filepath, Mesh mesh, IProgress<(string, float)>? progress = null, CancellationToken ct = default)
-        => await Task.Run(() => Save(filepath, mesh, progress, ct), ct);
+    public static async Task<bool> SaveAsync(string filepath, Mesh mesh, float scale = 1.0f, IProgress<(string, float)>? progress = null, CancellationToken ct = default)
+        => await Task.Run(() => Save(filepath, mesh, scale, progress, ct), ct);
 
-    public static bool Save(string filepath, Mesh mesh, IProgress<(string, float)>? progress = null, CancellationToken ct = default)
+    public static bool Save(string filepath, Mesh mesh, float scale = 1.0f, IProgress<(string, float)>? progress = null, CancellationToken ct = default)
     {
         try
         {
@@ -128,7 +145,7 @@ public static class ThreeMFIO
                     foreach (var (n, d) in c.MetadataFiles) WriteEntry(zip, n, d);
 
                 progress?.Report(("Writing model...", 0.3f));
-                WriteEntry(zip, "3D/3dmodel.model", Encoding.UTF8.GetBytes(GenModelXml(mesh, c, progress, ct)));
+                WriteEntry(zip, "3D/3dmodel.model", Encoding.UTF8.GetBytes(GenModelXml(mesh, scale, c, progress, ct)));
             }
 
             if (File.Exists(filepath)) File.Delete(filepath);
@@ -139,7 +156,7 @@ public static class ThreeMFIO
         catch { return false; }
     }
 
-    private static string GenModelXml(Mesh mesh, ThreeMFCache? c, IProgress<(string, float)>? progress, CancellationToken ct)
+    private static string GenModelXml(Mesh mesh, float scale, ThreeMFCache? c, IProgress<(string, float)>? progress, CancellationToken ct)
     {
         var sb = new StringBuilder();
         string unit = c?.ModelUnit ?? "millimeter";
@@ -163,7 +180,7 @@ public static class ThreeMFIO
         {
             ct.ThrowIfCancellationRequested();
             if (i % 10000 == 0) progress?.Report(("Writing vertices...", 0.3f + 0.2f * i / mesh.Vertices.Count));
-            var v = mesh.Vertices[i];
+            var v = mesh.Vertices[i] * scale; // Apply export scale
             // Convert from Y-up (our internal) to Z-up (3MF standard)
             sb.AppendLine($"     <vertex x=\"{v.X.ToString(CultureInfo.InvariantCulture)}\" y=\"{(-v.Z).ToString(CultureInfo.InvariantCulture)}\" z=\"{v.Y.ToString(CultureInfo.InvariantCulture)}\"/>");
         }
@@ -192,6 +209,76 @@ public static class ThreeMFIO
         sb.AppendLine(" </build>");
         sb.AppendLine("</model>");
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// Weld vertices that are within tolerance of each other.
+    /// Returns the new vertex list and a remap table (old index -> new index).
+    /// Uses spatial hashing for O(n) performance.
+    /// </summary>
+    private static (List<Vector3> vertices, int[] remap) WeldVertices(List<Vector3> vertices, float tolerance)
+    {
+        if (vertices.Count == 0)
+            return (new List<Vector3>(), Array.Empty<int>());
+        
+        float cellSize = tolerance * 2f;
+        var grid = new Dictionary<(int, int, int), List<int>>();
+        var weldedVerts = new List<Vector3>();
+        int[] remap = new int[vertices.Count];
+        
+        for (int i = 0; i < vertices.Count; i++)
+        {
+            var v = vertices[i];
+            int cx = (int)MathF.Floor(v.X / cellSize);
+            int cy = (int)MathF.Floor(v.Y / cellSize);
+            int cz = (int)MathF.Floor(v.Z / cellSize);
+            
+            // Check this cell and neighbors for existing vertex to weld to
+            int weldTo = -1;
+            float tolSq = tolerance * tolerance;
+            
+            for (int dx = -1; dx <= 1 && weldTo < 0; dx++)
+            for (int dy = -1; dy <= 1 && weldTo < 0; dy++)
+            for (int dz = -1; dz <= 1 && weldTo < 0; dz++)
+            {
+                var key = (cx + dx, cy + dy, cz + dz);
+                if (grid.TryGetValue(key, out var cell))
+                {
+                    foreach (int existingIdx in cell)
+                    {
+                        if (Vector3.DistanceSquared(v, weldedVerts[existingIdx]) <= tolSq)
+                        {
+                            weldTo = existingIdx;
+                            break;
+                        }
+                    }
+                }
+            }
+            
+            if (weldTo >= 0)
+            {
+                // Weld to existing vertex
+                remap[i] = weldTo;
+            }
+            else
+            {
+                // Create new vertex
+                int newIdx = weldedVerts.Count;
+                weldedVerts.Add(v);
+                remap[i] = newIdx;
+                
+                // Add to grid
+                var key = (cx, cy, cz);
+                if (!grid.TryGetValue(key, out var cell))
+                {
+                    cell = new List<int>();
+                    grid[key] = cell;
+                }
+                cell.Add(newIdx);
+            }
+        }
+        
+        return (weldedVerts, remap);
     }
 
     private static byte[] GenContentTypes() => Encoding.UTF8.GetBytes(
