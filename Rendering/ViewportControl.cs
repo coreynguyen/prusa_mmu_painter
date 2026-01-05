@@ -37,6 +37,7 @@ public class ViewportControl : GLControl
     public bool ShowQuantizedTexture { get; set; }
     public bool FlipTextureH { get; set; }
     public bool FlipTextureV { get; set; }
+    public bool Unlit { get; set; }  // Flat shading, no shadows - good for painting
     
     // Paint mode
     public bool PaintEnabled { get; set; } = false;  // Off by default to prevent accidental painting
@@ -124,7 +125,8 @@ public class ViewportControl : GLControl
             _grid = null;
             _brush.SetMesh(null, null);
             _undoManager.SetMesh(null);
-            Invalidate(); // Refresh viewport to clear display
+            _renderer.Clear();  // <-- ADD THIS LINE
+            Invalidate();
             return;
         }
         _grid = new SpatialGrid(mesh);
@@ -147,7 +149,8 @@ public class ViewportControl : GLControl
             _grid = null;
             _brush.SetMesh(null, null);
             _undoManager.SetMesh(null);
-            Invalidate(); // Refresh viewport to clear display
+            _renderer.Clear();  // <-- ADD THIS LINE
+            Invalidate();
             return;
         }
         _grid = new SpatialGrid(mesh);
@@ -337,7 +340,7 @@ public class ViewportControl : GLControl
         }
         
         _renderer.Draw(mvp, model, lightDir, _camera.Position,
-            texId, showTex, FlipTextureH, FlipTextureV);
+            texId, showTex, FlipTextureH, FlipTextureV, Unlit);
         
         if (ShowWireframe)
             _renderer.DrawWireframe(mvp, new Vector3(0.9f, 0.9f, 0.9f));

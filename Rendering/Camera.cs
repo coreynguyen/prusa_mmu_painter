@@ -22,8 +22,8 @@ public class Camera
     
     public float Fov { get; set; } = 45f;
     public float Aspect { get; set; } = 1.5f;
-    public float Near { get; set; } = 0.01f;
-    public float Far { get; set; } = 1000f;
+    public float Near { get; set; } = 0.1f;
+    public float Far { get; set; } = 1000000f;  // 1 million units - handles any reasonable mesh size
 
     /// <summary>
     /// View matrix matching Python:
@@ -100,7 +100,7 @@ public class Camera
     }
 
     /// <summary>
-    /// Frame mesh in view
+    /// Frame mesh in view - auto-adjusts near/far clip planes
     /// </summary>
     public void Frame(Vector3 center, float radius)
     {
@@ -111,6 +111,38 @@ public class Camera
         PanY = 0f;
         RotX = 30f;
         RotY = 45f;
+        
+        // Auto-adjust clip planes based on mesh size
+        // Near plane: small enough to not clip close geometry, but not so small it causes z-fighting
+        // Far plane: large enough to see the entire mesh from any angle
+        AdjustClipPlanes(radius);
+    }
+    
+    /// <summary>
+    /// Adjust near/far clip planes for a given mesh radius
+    /// </summary>
+    public void AdjustClipPlanes(float meshRadius)
+    {
+        if (meshRadius <= 0) meshRadius = 100f; // Default fallback
+        
+        // Far plane needs to encompass the mesh from any camera position
+        // Camera can be at Distance (2.5 * radius by default) and mesh extends radius from center
+        // Add extra margin for zooming out
+        float maxViewDistance = meshRadius * 20f;
+        
+        // Near plane should be small enough to not clip close geometry
+        // but large enough to maintain z-buffer precision
+        // For a mesh of radius R, near should be around R/1000 to R/10000
+        float idealNear = meshRadius * 0.001f;
+        
+        // Clamp to reasonable values
+        Near = MathF.Max(0.01f, idealNear);
+        Far = MathF.Max(10000f, maxViewDistance);
+        
+        // Ensure we have decent z-buffer precision (near/far ratio)
+        // 24-bit depth buffer can handle about 1:16000 ratio well
+        if (Far / Near > 100000f)
+            Near = Far / 100000f;
     }
 
     /// <summary>

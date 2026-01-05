@@ -149,6 +149,53 @@ public partial class MainWindow : Window
         _loadingCts?.Cancel();
     }
 
+    // Drag and drop support
+    private void Window_DragOver(object sender, System.Windows.DragEventArgs e)
+    {
+        if (e.Data.GetDataPresent(System.Windows.DataFormats.FileDrop))
+        {
+            var files = (string[])e.Data.GetData(System.Windows.DataFormats.FileDrop);
+            if (files != null && files.Length > 0)
+            {
+                string ext = Path.GetExtension(files[0]).ToLowerInvariant();
+                if (ext == ".obj" || ext == ".3mf" || ext == ".glb" || ext == ".gltf")
+                {
+                    e.Effects = System.Windows.DragDropEffects.Copy;
+                    e.Handled = true;
+                    return;
+                }
+            }
+        }
+        e.Effects = System.Windows.DragDropEffects.None;
+        e.Handled = true;
+    }
+
+    private async void Window_Drop(object sender, System.Windows.DragEventArgs e)
+    {
+        if (e.Data.GetDataPresent(System.Windows.DataFormats.FileDrop))
+        {
+            var files = (string[])e.Data.GetData(System.Windows.DataFormats.FileDrop);
+            if (files != null && files.Length > 0)
+            {
+                string ext = Path.GetExtension(files[0]).ToLowerInvariant();
+                if (ext == ".obj" || ext == ".3mf" || ext == ".glb" || ext == ".gltf")
+                {
+                    await LoadModelAsync(files[0]);
+                }
+                else
+                {
+                    ShowStatus($"Unsupported file type: {ext}");
+                }
+            }
+        }
+    }
+
+    // Click on empty viewport to open file dialog
+    private void EmptyState_Click(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        OpenModel_Click(sender, e);
+    }
+
     private void Window_KeyDown(object sender, System.Windows.Input.KeyEventArgs e)
     {
         if (Keyboard.Modifiers == ModifierKeys.Control)
@@ -171,6 +218,7 @@ public partial class MainWindow : Window
                 case Key.R: ResetView_Click(sender, e); e.Handled = true; break;
                 case Key.T: chkShowTexture.IsChecked = !chkShowTexture.IsChecked; e.Handled = true; break;
                 case Key.W: chkWireframe.IsChecked = !chkWireframe.IsChecked; e.Handled = true; break;
+                case Key.U: chkUnlit.IsChecked = !chkUnlit.IsChecked; e.Handled = true; break;
                 case Key.Q: 
                     if (chkPreviewQuantized.IsEnabled)
                         chkPreviewQuantized.IsChecked = !chkPreviewQuantized.IsChecked;
@@ -479,6 +527,10 @@ public partial class MainWindow : Window
         // Reset title
         Title = "3MF Tool";
         
+        // Show empty state overlay, hide viewport
+        emptyStateOverlay.Visibility = Visibility.Visible;
+        viewportHost.Visibility = Visibility.Collapsed;
+        
         _viewport?.Invalidate();
         ShowStatus("Scene cleared");
     }
@@ -561,9 +613,21 @@ public partial class MainWindow : Window
             _mesh = mesh;
             _currentFilePath = filepath;
             _viewport?.SetMesh(mesh);
+            
+            // Frame camera to show the mesh
+            _viewport?.FrameMesh();
+            
+            // Check mesh scale and warn if suspicious
+            float diameter = mesh.BoundingRadius * 2f;
+            await CheckMeshScaleAsync(mesh, diameter);
+            
             UpdateMeshInfo();
             UpdateUndoButtons();
             btnSave.IsEnabled = true;
+            
+            // Hide empty state overlay, show viewport
+            emptyStateOverlay.Visibility = Visibility.Collapsed;
+            viewportHost.Visibility = Visibility.Visible;
 
             // Track what was loaded for status message
             bool hasVertexColors = false;
@@ -622,8 +686,26 @@ public partial class MainWindow : Window
                 uvOverlayImage.Visibility = Visibility.Visible;
             }
         }
-        catch (OperationCanceledException) { ShowStatus("Cancelled"); }
-        catch (Exception ex) { MessageBox.Show($"Load failed:\n{ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error); }
+        catch (OperationCanceledException) 
+        { 
+            ShowStatus("Cancelled");
+            // Show empty state if we don't have a mesh
+            if (_mesh == null)
+            {
+                emptyStateOverlay.Visibility = Visibility.Visible;
+                viewportHost.Visibility = Visibility.Collapsed;
+            }
+        }
+        catch (Exception ex) 
+        { 
+            MessageBox.Show($"Load failed:\n{ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            // Show empty state if we don't have a mesh
+            if (_mesh == null)
+            {
+                emptyStateOverlay.Visibility = Visibility.Visible;
+                viewportHost.Visibility = Visibility.Collapsed;
+            }
+        }
         finally { loadingOverlay.Visibility = Visibility.Collapsed; btnCancelLoading.Visibility = Visibility.Collapsed; }
     }
 
@@ -737,6 +819,7 @@ public partial class MainWindow : Window
         _viewport.ShowTexture = chkShowTexture.IsChecked == true;
         _viewport.FlipTextureH = chkFlipH.IsChecked == true;
         _viewport.FlipTextureV = chkFlipV.IsChecked == true;
+        _viewport.Unlit = chkUnlit.IsChecked == true;
         
         // If subdivision edges toggled ON, rebuild VBO with edge data
         if (sender == chkSubdivisions && chkSubdivisions.IsChecked == true)
@@ -936,6 +1019,20 @@ public partial class MainWindow : Window
         btnToggleQuantized.Content = _showingQuantized ? "Show Original" : "Show Quantized";
     }
 
+    /// <summary>
+    /// Turn off quantized preview if it's currently on.
+    /// Used when entering paint mode or after projection to avoid confusion.
+    /// </summary>
+    private void TurnOffQuantizedPreview()
+    {
+        if (_showingQuantized && _originalTextureBitmap != null)
+        {
+            _showingQuantized = false;
+            texturePreview.Source = _originalTextureBitmap;
+            btnToggleQuantized.Content = "Show Quantized";
+        }
+    }
+
     private void ExportQuantized_Click(object sender, RoutedEventArgs e)
     {
         if (_quantizedTextureBitmap == null) return;
@@ -1099,11 +1196,16 @@ public partial class MainWindow : Window
             _viewport.Invalidate(); // Force redraw to show/hide brush
         }
         
-        // Update status
+        // Turn off quantized preview when entering paint mode to avoid confusion
         if (_paintModeEnabled)
+        {
+            TurnOffQuantizedPreview();
             ShowStatus("Paint mode enabled - click and drag to paint");
+        }
         else
+        {
             ShowStatus("Paint mode disabled - painting locked");
+        }
     }
 
     private System.Threading.CancellationTokenSource? _autoQuantizeCts;
@@ -1136,10 +1238,6 @@ public partial class MainWindow : Window
         int numColors = (int)sliderNumColors.Value;
         var method = (QuantizeMethod)cmbQuantizeMethod.SelectedIndex;
         
-        // Show processing indicator
-        txtProcessing.Visibility = Visibility.Visible;
-        ShowStatus($"Auto-quantizing with {method}...");
-        
         // Check if palette is locked and we have an existing palette
         bool useLocked = chkLockPalette.IsChecked == true && _quantizedPalette != null;
         Vector3[]? lockedPalette = useLocked ? (Vector3[])_quantizedPalette!.Clone() : null;
@@ -1162,10 +1260,12 @@ public partial class MainWindow : Window
             HighlightCompress = (float)sliderHighlightCompress.Value
         };
 
+        // Show processing indicator
+        txtProcessing.Visibility = Visibility.Visible;
+        ShowStatus($"Auto-quantizing with {method}...");
+
         try
         {
-            // 1. ALWAYS run the algorithm to find the REGIONS/SHAPES
-            // The algorithm defines WHERE the color boundaries are
             var naturalPalette = await Task.Run(() => Quantizer.Quantize(
                 _textureData, _textureWidth, _textureHeight, numColors, method, options));
             
@@ -1186,31 +1286,24 @@ public partial class MainWindow : Window
             if (useLocked && lockedPalette != null)
             {
                 // LOCKED MODE: Use algorithm's REGIONS but force LOCKED COLORS
-                
-                // A. Map pixels to the algorithm's natural palette (defines regions)
                 var naturalMap = await Task.Run(() => Quantizer.MapPixelsToPalette(
                     _textureData, _textureWidth, _textureHeight, naturalPalette, options));
                 
-                // B. Ensure locked palette has correct size
                 var effectiveLockedPalette = GetLockedPaletteForSize(lockedPalette, numColors);
                 
-                // C. Create translation table: natural color index → nearest locked color index
                 byte[] translationTable = new byte[naturalPalette.Length];
                 for (int i = 0; i < naturalPalette.Length; i++)
                 {
                     translationTable[i] = (byte)FindNearestColorIndex(naturalPalette[i], effectiveLockedPalette, options.ColorWeight);
                 }
                 
-                // D. Rewrite the map using locked indices
                 _quantizedIndexMap = new byte[naturalMap.Length];
-                Parallel.For(0, naturalMap.Length, i =>
+                await Task.Run(() => Parallel.For(0, naturalMap.Length, i =>
                 {
                     _quantizedIndexMap[i] = translationTable[naturalMap[i]];
-                });
+                }));
                 
-                // E. Use locked palette for display
                 _quantizedPalette = effectiveLockedPalette;
-                
                 ShowStatus($"Regions: {method} | Weight: {options.ColorWeight:F1} | Gamma: {options.Gamma:F1}");
             }
             else
@@ -1225,7 +1318,7 @@ public partial class MainWindow : Window
                 ShowStatus($"{method}: {numColors} colors | Weight: {options.ColorWeight:F1} | Gamma: {options.Gamma:F1}");
             }
 
-            // 2. Generate texture and update UI
+            // Generate texture and update UI
             RegenerateQuantizedTexture();
 
             _showingQuantized = true;
@@ -1249,7 +1342,6 @@ public partial class MainWindow : Window
         }
         finally
         {
-            // Hide processing indicator
             txtProcessing.Visibility = Visibility.Collapsed;
         }
     }
@@ -1284,16 +1376,18 @@ public partial class MainWindow : Window
             HighlightCompress = (float)sliderHighlightCompress.Value
         };
 
+        // Show loading overlay - must hide viewportHost due to WPF airspace issue
+        viewportHost.Visibility = Visibility.Collapsed;
         loadingOverlay.Visibility = Visibility.Visible;
-        txtLoadingStatus.Text = useLocked ? $"Finding regions with {method}..." : $"Quantizing with {method}...";
         loadingProgress.IsIndeterminate = true;
+        txtLoadingStatus.Text = useLocked ? "Quantizing with locked palette..." : $"Quantizing with {method}...";
         txtLoadingPercent.Text = "";
         btnCancelLoading.Visibility = Visibility.Collapsed;
 
         try
         {
-            // 1. ALWAYS run the algorithm to find the REGIONS/SHAPES
             txtLoadingStatus.Text = $"Running {method} algorithm...";
+            
             var naturalPalette = await Task.Run(() => Quantizer.Quantize(
                 _textureData, _textureWidth, _textureHeight, numColors, method, options));
             
@@ -1337,10 +1431,10 @@ public partial class MainWindow : Window
                 
                 // D. Rewrite the map using locked indices
                 _quantizedIndexMap = new byte[naturalMap.Length];
-                Parallel.For(0, naturalMap.Length, i =>
+                await Task.Run(() => Parallel.For(0, naturalMap.Length, i =>
                 {
                     _quantizedIndexMap[i] = translationTable[naturalMap[i]];
-                });
+                }));
                 
                 // E. Use locked palette for display
                 _quantizedPalette = effectiveLockedPalette;
@@ -1362,6 +1456,7 @@ public partial class MainWindow : Window
             }
 
             // Generate texture and update UI
+            txtLoadingStatus.Text = "Generating preview...";
             RegenerateQuantizedTexture();
 
             _showingQuantized = true;
@@ -1376,7 +1471,14 @@ public partial class MainWindow : Window
         { 
             MessageBox.Show($"Quantization failed:\n{ex.Message}\n\nStack trace:\n{ex.StackTrace}", "Error", MessageBoxButton.OK, MessageBoxImage.Error); 
         }
-        finally { loadingOverlay.Visibility = Visibility.Collapsed; loadingProgress.IsIndeterminate = false; }
+        finally 
+        { 
+            loadingOverlay.Visibility = Visibility.Collapsed; 
+            loadingProgress.IsIndeterminate = false;
+            // Restore viewport if we have a mesh
+            if (_mesh != null)
+                viewportHost.Visibility = Visibility.Visible;
+        }
     }
 
     private async void ProjectTexture_Click(object sender, RoutedEventArgs e)
@@ -1386,11 +1488,14 @@ public partial class MainWindow : Window
         // Use quantized palette if available, otherwise offer to quantize
         if (_quantizedPalette == null || _quantizedPalette.Length == 0) 
         { 
-            var result = ShowDarkDialog(
+            var result = ShowThemedDialog(
                 "Quantization Required",
-                "A quantized texture is needed for projection.\n\nWould you like to quantize the texture now?",
+                "To project colors onto the mesh, the texture must first be quantized to a limited color palette.\n\n" +
+                "This will analyze the texture and reduce it to the number of colors specified in the Quantize settings.\n\n" +
+                "Would you like to quantize the texture now?",
                 "Yes, Quantize",
-                "Cancel");
+                "Cancel",
+                isWarning: false);
             
             if (result == true)
             {
@@ -1424,9 +1529,13 @@ public partial class MainWindow : Window
             }
         }
 
+        // Show loading overlay - must hide viewportHost due to WPF airspace issue
+        viewportHost.Visibility = Visibility.Collapsed;
         loadingOverlay.Visibility = Visibility.Visible;
         loadingProgress.IsIndeterminate = false;
-        btnCancelLoading.Visibility = Visibility.Collapsed; // Can't cancel projection easily
+        loadingProgress.Value = 0;
+        txtLoadingPercent.Text = "0%";
+        btnCancelLoading.Visibility = Visibility.Collapsed;
         
         var progress = new Progress<(string, float)>(p => { 
             txtLoadingStatus.Text = p.Item1; 
@@ -1442,23 +1551,21 @@ public partial class MainWindow : Window
             long estimatedSubTris = (long)_mesh.Triangles.Count * (long)Math.Pow(4, subdiv);
             if (subdiv >= 9)
             {
-                var result = MessageBox.Show(
+                var msgResult = ShowThemedDialog(
+                    "High Subdivision Warning",
                     $"Subdivision level {subdiv} will create approximately {estimatedSubTris:N0} sub-triangles.\n\n" +
                     $"This may take several minutes and use significant memory.\n\n" +
-                    $"Continue?",
-                    "High Subdivision Warning",
-                    MessageBoxButton.YesNo,
-                    MessageBoxImage.Warning);
-                if (result != MessageBoxResult.Yes) 
+                    $"Do you want to continue?",
+                    "Yes, Continue",
+                    "Cancel",
+                    isWarning: true);
+                if (msgResult != true) 
                 {
-                    loadingOverlay.Visibility = Visibility.Collapsed;
                     return;
                 }
             }
 
             // Build brush palette directly from quantized colors
-            // ExtruderId 1 = palette[0], ExtruderId 2 = palette[1], etc.
-            // (PrusaSlicer uses 1-based extruder IDs, 0 = default/unpainted)
             var newBrushPalette = new Vector3[_quantizedPalette.Length];
             for (int i = 0; i < _quantizedPalette.Length; i++) 
             {
@@ -1478,7 +1585,6 @@ public partial class MainWindow : Window
             {
                 if (indexMap != null && subdiv > 0)
                 {
-                    // No offset - Color 0 = first extruder, Color 1 = second, etc.
                     TextureProjector.ProjectWithIndexMap(mesh, indexMap, texWidth, texHeight, 0, subdiv, progress);
                 }
                 else if (subdiv > 0)
@@ -1512,9 +1618,11 @@ public partial class MainWindow : Window
             SetupColorPanel();
             
             // CRITICAL: Update viewport with mesh AND palette together
-            // This rebuilds VBO, spatial grid, brush state, and clears undo history
             txtLoadingStatus.Text = "Rebuilding display...";
             _viewport?.SetMeshWithPalette(_mesh, _brushPalette);
+            
+            // Turn off quantized preview - user should see the actual painted mesh now
+            TurnOffQuantizedPreview();
             
             UpdateMeshInfo();
             string colorInfo = string.Join(", ", colorCounts.OrderBy(kv => kv.Key).Select(kv => $"C{kv.Key}:{kv.Value}"));
@@ -1524,7 +1632,13 @@ public partial class MainWindow : Window
         { 
             MessageBox.Show($"Projection failed:\n{ex.Message}\n\n{ex.StackTrace}", "Error", MessageBoxButton.OK, MessageBoxImage.Error); 
         }
-        finally { loadingOverlay.Visibility = Visibility.Collapsed; }
+        finally 
+        { 
+            loadingOverlay.Visibility = Visibility.Collapsed;
+            // Restore viewport
+            if (_mesh != null)
+                viewportHost.Visibility = Visibility.Visible;
+        }
     }
 
     private void UpdateMeshInfo()
@@ -1533,90 +1647,161 @@ public partial class MainWindow : Window
         
         int uvCount = _mesh.Triangles.Count(t => t.UV != null);
         string projStatus = _meshHasProjectedTexture ? " [Projected]" : "";
+        float diameter = _mesh.BoundingRadius * 2f;
+        string sizeStr = diameter < 1f ? $"{diameter:F3} mm" : $"{diameter:F1} mm";
+        
         txtMeshInfo.Text = $"Vertices: {_mesh.Vertices.Count:N0}\n" +
                           $"Triangles: {_mesh.Triangles.Count:N0}\n" +
                           $"With UVs: {uvCount:N0}\n" +
                           $"Sub-triangles: {_mesh.TotalSubTriangles:N0}{projStatus}\n" +
-                          $"Bounds: {_mesh.BoundingRadius:F1} units";
+                          $"Size: {sizeStr} diameter";
         txtMeshInfo.Foreground = (System.Windows.Media.Brush)FindResource("TextBrush");
     }
 
     private void ShowStatus(string msg) => txtStatus.Text = msg;
 
     /// <summary>
-    /// Shows a dark-themed dialog with custom buttons.
+    /// Shows a themed dialog with custom buttons.
     /// Returns true if primary button clicked, false if secondary, null if closed.
     /// </summary>
-    private bool? ShowDarkDialog(string title, string message, string primaryButton, string secondaryButton)
+    private bool? ShowThemedDialog(string title, string message, string primaryButton, string secondaryButton, bool isWarning = false)
     {
+        // Get theme colors with fallbacks
+        System.Windows.Media.Brush bgColor, textColor, borderColor, dimTextColor;
+        
+        try { bgColor = (System.Windows.Media.Brush)FindResource("WindowBackgroundBrush"); }
+        catch { bgColor = new SolidColorBrush(Color.FromRgb(30, 30, 30)); }
+        
+        try { textColor = (System.Windows.Media.Brush)FindResource("TextBrush"); }
+        catch { textColor = Brushes.White; }
+        
+        try { borderColor = (System.Windows.Media.Brush)FindResource("ControlBorderBrush"); }
+        catch { borderColor = new SolidColorBrush(Color.FromRgb(80, 80, 80)); }
+        
+        try { dimTextColor = (System.Windows.Media.Brush)FindResource("TextDimBrush"); }
+        catch { dimTextColor = new SolidColorBrush(Color.FromRgb(160, 160, 160)); }
+        
+        // Accent color for primary button
+        var accentColor = new SolidColorBrush(Color.FromRgb(0, 122, 204));
+        
         var dialog = new Window
         {
             Title = title,
-            Width = 400,
-            Height = 180,
+            Width = 480,
+            MinHeight = 200,
+            MaxWidth = 600,
+            SizeToContent = SizeToContent.Height,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
             Owner = this,
             ResizeMode = ResizeMode.NoResize,
-            Background = new SolidColorBrush(Color.FromRgb(30, 30, 30)),
-            Foreground = Brushes.White,
+            Background = bgColor,
+            Foreground = textColor,
             WindowStyle = WindowStyle.ToolWindow
         };
 
         bool? result = null;
 
-        var grid = new Grid();
-        grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        var mainGrid = new Grid { Margin = new Thickness(24) };
+        mainGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // Icon + Title
+        mainGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // Message
+        mainGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(20) }); // Spacer
+        mainGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // Buttons
 
+        // Warning icon and title row
+        var headerPanel = new System.Windows.Controls.StackPanel
+        {
+            Orientation = System.Windows.Controls.Orientation.Horizontal,
+            Margin = new Thickness(0, 0, 0, 16)
+        };
+        Grid.SetRow(headerPanel, 0);
+        
+        if (isWarning)
+        {
+            var warningIcon = new TextBlock
+            {
+                Text = "⚠",
+                FontSize = 28,
+                Foreground = new SolidColorBrush(Color.FromRgb(255, 193, 7)),
+                Margin = new Thickness(0, 0, 12, 0),
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            headerPanel.Children.Add(warningIcon);
+        }
+        
+        var titleText = new TextBlock
+        {
+            Text = title,
+            FontSize = 18,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = textColor,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        headerPanel.Children.Add(titleText);
+        mainGrid.Children.Add(headerPanel);
+
+        // Message text
         var messageText = new TextBlock
         {
             Text = message,
-            Foreground = Brushes.White,
+            Foreground = textColor,
             TextWrapping = TextWrapping.Wrap,
-            Margin = new Thickness(20),
-            VerticalAlignment = VerticalAlignment.Center,
-            FontSize = 14
+            FontSize = 14,
+            LineHeight = 22
         };
-        Grid.SetRow(messageText, 0);
-        grid.Children.Add(messageText);
+        Grid.SetRow(messageText, 1);
+        mainGrid.Children.Add(messageText);
 
+        // Button panel
         var buttonPanel = new System.Windows.Controls.StackPanel
         {
             Orientation = System.Windows.Controls.Orientation.Horizontal,
-            HorizontalAlignment = System.Windows.HorizontalAlignment.Right,
-            Margin = new Thickness(20, 10, 20, 20)
+            HorizontalAlignment = System.Windows.HorizontalAlignment.Right
         };
-        Grid.SetRow(buttonPanel, 1);
+        Grid.SetRow(buttonPanel, 3);
 
         var primaryBtn = new System.Windows.Controls.Button
         {
             Content = primaryButton,
-            Padding = new Thickness(20, 8, 20, 8),
-            Margin = new Thickness(0, 0, 10, 0),
-            Background = new SolidColorBrush(Color.FromRgb(0, 122, 204)),
+            Padding = new Thickness(24, 10, 24, 10),
+            Margin = new Thickness(0, 0, 12, 0),
+            FontSize = 14,
+            Background = accentColor,
             Foreground = Brushes.White,
-            BorderBrush = new SolidColorBrush(Color.FromRgb(0, 122, 204))
+            BorderThickness = new Thickness(0),
+            Cursor = System.Windows.Input.Cursors.Hand
         };
         primaryBtn.Click += (s, e) => { result = true; dialog.Close(); };
 
         var secondaryBtn = new System.Windows.Controls.Button
         {
             Content = secondaryButton,
-            Padding = new Thickness(20, 8, 20, 8),
-            Background = new SolidColorBrush(Color.FromRgb(60, 60, 60)),
-            Foreground = Brushes.White,
-            BorderBrush = new SolidColorBrush(Color.FromRgb(80, 80, 80))
+            Padding = new Thickness(24, 10, 24, 10),
+            FontSize = 14,
+            Background = new SolidColorBrush(Color.FromArgb(40, 128, 128, 128)),
+            Foreground = textColor,
+            BorderBrush = borderColor,
+            BorderThickness = new Thickness(1),
+            Cursor = System.Windows.Input.Cursors.Hand
         };
         secondaryBtn.Click += (s, e) => { result = false; dialog.Close(); };
 
         buttonPanel.Children.Add(primaryBtn);
         buttonPanel.Children.Add(secondaryBtn);
-        grid.Children.Add(buttonPanel);
+        mainGrid.Children.Add(buttonPanel);
 
-        dialog.Content = grid;
+        dialog.Content = mainGrid;
         dialog.ShowDialog();
 
         return result;
+    }
+    
+    /// <summary>
+    /// Shows a dark-themed dialog with custom buttons (legacy wrapper).
+    /// Returns true if primary button clicked, false if secondary, null if closed.
+    /// </summary>
+    private bool? ShowDarkDialog(string title, string message, string primaryButton, string secondaryButton)
+    {
+        return ShowThemedDialog(title, message, primaryButton, secondaryButton, false);
     }
 
     /// <summary>
@@ -1804,6 +1989,114 @@ public partial class MainWindow : Window
         };
     }
 
+    /// <summary>
+    /// Check if mesh scale is suspicious and offer to rescale
+    /// </summary>
+    private async Task CheckMeshScaleAsync(Mesh mesh, float diameter)
+    {
+        // Reasonable range for 3D printing: 1mm to 300mm diameter
+        const float MIN_REASONABLE = 1f;      // 1mm
+        const float MAX_REASONABLE = 300f;    // 300mm - typical print bed
+        const float VERY_SMALL = 0.1f;        // 0.1mm - definitely wrong
+        const float VERY_LARGE = 1000f;       // 1000mm - likely wrong units
+        
+        // Format size string based on magnitude
+        string sizeInfo;
+        if (diameter < 0.001f)
+            sizeInfo = $"{diameter * 1000000:F1} μm ({diameter:E2} units)";
+        else if (diameter < 1f)
+            sizeInfo = $"{diameter:F4} mm";
+        else if (diameter < 1000f)
+            sizeInfo = $"{diameter:F1} mm";
+        else
+            sizeInfo = $"{diameter:F0} mm ({diameter/1000:F2} meters)";
+        
+        if (diameter < VERY_SMALL)
+        {
+            // Extremely small - likely in meters
+            var result = ShowThemedDialog(
+                "Model Too Small",
+                $"The model bounding diameter is only {sizeInfo}.\n\n" +
+                $"This strongly suggests the model was exported in METERS instead of millimeters.\n\n" +
+                $"Would you like to scale it ×1000 to convert to millimeters?",
+                "Yes, Scale ×1000",
+                "No, Keep Size",
+                isWarning: true);
+            
+            if (result == true)
+            {
+                await ApplyMeshScale(mesh, 1000f);
+            }
+        }
+        else if (diameter < MIN_REASONABLE)
+        {
+            // Small - likely in centimeters
+            var result = ShowThemedDialog(
+                "Model Appears Small",
+                $"The model bounding diameter is {sizeInfo}.\n\n" +
+                $"This suggests the model may have been exported in centimeters.\n\n" +
+                $"Would you like to scale it ×10 to convert to millimeters?",
+                "Yes, Scale ×10",
+                "No, Keep Size",
+                isWarning: true);
+            
+            if (result == true)
+            {
+                await ApplyMeshScale(mesh, 10f);
+            }
+        }
+        else if (diameter > VERY_LARGE)
+        {
+            // Large - likely wrong units (over 1 meter)
+            float suggestedScale = 100f / diameter; // Scale to ~100mm
+            var result = ShowThemedDialog(
+                "Model Very Large",
+                $"The model bounding diameter is {sizeInfo}.\n\n" +
+                $"This is over 1 meter, which is larger than most 3D printers can handle.\n\n" +
+                $"Would you like to scale it down to approximately 100mm?",
+                $"Yes, Scale to 100mm",
+                "No, Keep Size",
+                isWarning: true);
+            
+            if (result == true)
+            {
+                await ApplyMeshScale(mesh, suggestedScale);
+            }
+            else
+            {
+                ShowStatus($"Large model: {sizeInfo}");
+            }
+        }
+        else if (diameter > MAX_REASONABLE)
+        {
+            // Between 300-1000mm - inform user but don't force action
+            ShowStatus($"Large model: {sizeInfo} - consider scaling if needed (Scale Settings)");
+        }
+        else
+        {
+            // Normal range - show size info
+            ShowStatus($"Loaded: {sizeInfo} diameter");
+        }
+    }
+
+    /// <summary>
+    /// Apply scale to mesh vertices and update viewport
+    /// </summary>
+    private async Task ApplyMeshScale(Mesh mesh, float scale)
+    {
+        await Task.Run(() =>
+        {
+            for (int i = 0; i < mesh.Vertices.Count; i++)
+                mesh.Vertices[i] *= scale;
+            mesh.ComputeBounds();
+        });
+        
+        _viewport?.SetMesh(mesh);
+        _viewport?.FrameMesh();
+        UpdateMeshInfo();
+        ShowStatus($"Scaled mesh by ×{scale:F4} → {mesh.BoundingRadius * 2:F1}mm diameter");
+    }
+
     private void ImportScale_Changed(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
         // Show/hide custom scale textbox
@@ -1830,8 +2123,20 @@ public partial class MainWindow : Window
             txtSmoothRadius.Text = ((int)e.NewValue).ToString();
     }
 
+    // =============================================================================
+    // FIX FOR: ApplyExtruderLimit_Click in MainWindow.xaml.cs
+    // 
+    // PROBLEM: When limiting colors, similar shades (e.g., 5 whites) each take a 
+    // slot. We need to MERGE similar colors together, not just sort by frequency.
+    //
+    // SOLUTION: Use agglomerative clustering to merge similar colors, weighted by
+    // frequency. This combines "white" and "off-white" into one slot, freeing up
+    // space for actually distinct colors.
+    // =============================================================================
+
     /// <summary>
     /// Destructive palette quantization with optimization and smoothing.
+    /// Merges similar colors together using frequency-weighted clustering.
     /// </summary>
     private void ApplyExtruderLimit_Click(object sender, RoutedEventArgs e)
     {
@@ -1840,65 +2145,196 @@ public partial class MainWindow : Window
             ShowStatus("No mesh loaded");
             return;
         }
-        
+
         int limit = (int)sliderLimitExtruders.Value; // 1-8
         int smoothRadius = (int)sliderSmoothRadius.Value; // 0-500
-        
+
         // OPTIMIZATION: If expanding limit (e.g., 5 -> 8) and no smoothing,
         // just update UI - no mesh processing needed!
         if (limit >= _currentExtruderLimit && smoothRadius == 0)
         {
-            // Just unlock more colors in UI
             _viewport.SetMaxPaintColor(limit - 1);
             _currentExtruderLimit = limit;
             SetupColorPanel();
             ShowStatus($"Limit increased to {limit} (no mesh changes)");
             return;
         }
-        
+
         // 1. Undo Backup
         _paletteBackup = new Vector3[8];
         Array.Copy(_brushPalette, _paletteBackup, 8);
         _limitBackup = _currentExtruderLimit;
-        
+
         _viewport.BeginBulkOperation();
 
-        int remappedCount = 0;
-
-        // 2. DESTRUCTIVE REMAP (only if reducing colors)
-        if (limit < _currentExtruderLimit)
+        // =========================================================================
+        // STEP 1: Count frequency of each color
+        // =========================================================================
+        var colorFrequency = new long[8];
+        foreach (var tri in _mesh.Triangles)
         {
-            var remapTable = new int[256];
-            
-            // Valid range (0 to limit-1)
-            for (int i = 0; i < limit; i++) remapTable[i] = i;
-
-            // Invalid range (limit to 255) -> remap to nearest valid
-            for (int i = limit; i < 256; i++)
+            foreach (var sub in tri.PaintData)
             {
-                int srcIdx = Math.Clamp(i, 0, 7);
-                Vector3 srcColor = _brushPalette[srcIdx];
-                float minDist = float.MaxValue;
-                int bestMatch = 0;
-                
-                for (int j = 0; j < limit; j++)
+                int id = Math.Clamp(sub.ExtruderId, 0, 7);
+                colorFrequency[id]++;
+            }
+        }
+
+        // =========================================================================
+        // STEP 2: Build initial clusters (one per color that's actually used)
+        // =========================================================================
+        var clusters = new List<ColorCluster>();
+        for (int i = 0; i < 8; i++)
+        {
+            if (colorFrequency[i] > 0)
+            {
+                clusters.Add(new ColorCluster
                 {
-                    float dist = Vector3.DistanceSquared(srcColor, _brushPalette[j]);
-                    if (dist < minDist) { minDist = dist; bestMatch = j; }
-                }
-                remapTable[i] = bestMatch;
+                    Color = _brushPalette[i],
+                    Frequency = colorFrequency[i],
+                    OriginalIndices = new List<int> { i }
+                });
+            }
+        }
+
+        // If we already have fewer colors than the limit, no merging needed
+        if (clusters.Count <= limit)
+        {
+            // Just rebuild palette sorted by frequency
+            var sorted = clusters.OrderByDescending(c => c.Frequency).ToList();
+            var newPalette = new Vector3[8];
+            var oldToNew = new int[8];
+
+            for (int i = 0; i < 8; i++)
+                oldToNew[i] = 0; // Default unmapped colors to 0
+
+            for (int newIdx = 0; newIdx < sorted.Count; newIdx++)
+            {
+                newPalette[newIdx] = sorted[newIdx].Color;
+                foreach (int oldIdx in sorted[newIdx].OriginalIndices)
+                    oldToNew[oldIdx] = newIdx;
             }
 
-            // Apply Remap
-            for (int i = 0; i < _mesh.Triangles.Count; i++)
-            {
-                var tri = _mesh.Triangles[i];
-                for (int k = 0; k < tri.PaintData.Count; k++)
-                {
-                    int oldId = tri.PaintData[k].ExtruderId;
-                    int safeId = Math.Clamp(oldId, 0, 255);
-                    int newId = remapTable[safeId];
+            // Fill remaining slots
+            for (int i = sorted.Count; i < 8; i++)
+                newPalette[i] = Vector3.Zero;
 
+            // Apply remapping
+            int remapped = RemapMesh(_mesh, oldToNew);
+            Array.Copy(newPalette, _brushPalette, 8);
+
+            FinishLimitOperation(limit, smoothRadius, remapped, 0);
+            return;
+        }
+
+        // =========================================================================
+        // STEP 3: Agglomerative clustering - merge similar colors until we have 'limit'
+        // =========================================================================
+        while (clusters.Count > limit)
+        {
+            // Find the two most similar clusters to merge
+            float minCost = float.MaxValue;
+            int mergeA = -1, mergeB = -1;
+
+            for (int i = 0; i < clusters.Count; i++)
+            {
+                for (int j = i + 1; j < clusters.Count; j++)
+                {
+                    // Merge cost = color distance
+                    // We DON'T weight by frequency here - we want to merge similar colors
+                    // regardless of how common they are
+                    float colorDist = Vector3.Distance(clusters[i].Color, clusters[j].Color);
+
+                    // Optional: Slightly prefer merging low-frequency colors
+                    // This keeps distinct high-frequency colors separate longer
+                    // float freqFactor = 1.0f / (1.0f + MathF.Log10(clusters[i].Frequency + clusters[j].Frequency));
+                    // float cost = colorDist * freqFactor;
+                    float cost = colorDist;
+
+                    if (cost < minCost)
+                    {
+                        minCost = cost;
+                        mergeA = i;
+                        mergeB = j;
+                    }
+                }
+            }
+
+            if (mergeA < 0 || mergeB < 0) break;
+
+            // Merge cluster B into cluster A (frequency-weighted average color)
+            var cA = clusters[mergeA];
+            var cB = clusters[mergeB];
+            long totalFreq = cA.Frequency + cB.Frequency;
+
+            // Weighted average color
+            cA.Color = (cA.Color * cA.Frequency + cB.Color * cB.Frequency) / totalFreq;
+            cA.Frequency = totalFreq;
+            cA.OriginalIndices.AddRange(cB.OriginalIndices);
+
+            // Remove cluster B
+            clusters.RemoveAt(mergeB);
+        }
+
+        // =========================================================================
+        // STEP 4: Sort final clusters by frequency (most used = slot 0)
+        // =========================================================================
+        var finalClusters = clusters.OrderByDescending(c => c.Frequency).ToList();
+
+        // Build new palette and remap table
+        var finalPalette = new Vector3[8];
+        var finalOldToNew = new int[8];
+
+        // Initialize all to 0 (will map unused colors to first cluster)
+        for (int i = 0; i < 8; i++)
+            finalOldToNew[i] = 0;
+
+        for (int newIdx = 0; newIdx < finalClusters.Count && newIdx < limit; newIdx++)
+        {
+            finalPalette[newIdx] = finalClusters[newIdx].Color;
+            foreach (int oldIdx in finalClusters[newIdx].OriginalIndices)
+            {
+                finalOldToNew[oldIdx] = newIdx;
+            }
+        }
+
+        // Zero out unused palette slots
+        for (int i = limit; i < 8; i++)
+            finalPalette[i] = Vector3.Zero;
+
+        // =========================================================================
+        // STEP 5: Apply remapping to mesh
+        // =========================================================================
+        int remappedCount = RemapMesh(_mesh, finalOldToNew);
+        Array.Copy(finalPalette, _brushPalette, 8);
+
+        FinishLimitOperation(limit, smoothRadius, remappedCount, 8 - finalClusters.Count);
+    }
+
+    /// <summary>
+    /// Helper class for color clustering
+    /// </summary>
+    private class ColorCluster
+    {
+        public Vector3 Color;
+        public long Frequency;
+        public List<int> OriginalIndices = new();
+    }
+
+    /// <summary>
+    /// Remap all mesh triangle colors using the lookup table
+    /// </summary>
+    private int RemapMesh(Mesh mesh, int[] oldToNew)
+    {
+        int remappedCount = 0;
+        foreach (var tri in mesh.Triangles)
+        {
+            for (int k = 0; k < tri.PaintData.Count; k++)
+            {
+                int oldId = tri.PaintData[k].ExtruderId;
+                if (oldId >= 0 && oldId < 8)
+                {
+                    int newId = oldToNew[oldId];
                     if (newId != oldId)
                     {
                         tri.PaintData[k].ExtruderId = newId;
@@ -1907,34 +2343,38 @@ public partial class MainWindow : Window
                 }
             }
         }
+        return remappedCount;
+    }
 
-        // 3. SMOOTHING / DENOISING
+    /// <summary>
+    /// Common finish logic for limit operation
+    /// </summary>
+    private void FinishLimitOperation(int limit, int smoothRadius, int remappedCount, int mergedCount)
+    {
+        // Smoothing / Denoising
         int smoothedCount = 0;
         if (smoothRadius > 0)
         {
-            smoothedCount = DenoiseMesh(_mesh, smoothRadius, limit);
+            smoothedCount = DenoiseMesh(_mesh!, smoothRadius, limit);
         }
 
-        _viewport.EndBulkOperation();
+        _viewport!.EndBulkOperation();
 
-        // 4. Update UI
+        // Update UI
         _paletteBackupUndoCount = _viewport.UndoCount;
-        
-        // Zero out unused palette slots
-        for (int i = limit; i < 8; i++) 
-            _brushPalette[i] = Vector3.Zero;
-        
+
         _viewport.SetMaxPaintColor(limit - 1);
         _currentExtruderLimit = limit;
-        
+
         _viewport.SetPalette(_brushPalette);
         _viewport.RebuildVBO();
         SetupColorPanel();
         UpdateUndoButtons();
-        
-        ShowStatus($"Limit {limit}: {remappedCount} remapped, {smoothedCount} specks removed");
+
+        string mergeInfo = mergedCount > 0 ? $", {mergedCount} similar colors merged" : "";
+        ShowStatus($"Limit {limit}: {remappedCount} remapped{mergeInfo}, {smoothedCount} specks removed");
     }
-    
+
     /// <summary>
     /// Removes isolated islands of color smaller than minRegionSize
     /// by merging them into their dominant neighbor color.

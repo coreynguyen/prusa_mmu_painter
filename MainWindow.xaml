@@ -4,7 +4,89 @@
         Title="3MF Tool - MMU Painter" Height="900" Width="1400" MinHeight="600" MinWidth="900"
         Background="{DynamicResource WindowBackgroundBrush}"
         Icon="Resources/icon.ico"
+        AllowDrop="True" DragOver="Window_DragOver" Drop="Window_Drop"
         Loaded="Window_Loaded" Closing="Window_Closing" KeyDown="Window_KeyDown" KeyUp="Window_KeyUp" PreviewKeyUp="Window_KeyUp">
+
+    <Window.Resources>
+        <!-- Dark Theme Expander Style -->
+        <Style TargetType="Expander">
+            <Setter Property="Background" Value="{DynamicResource ControlBackgroundBrush}"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextBrush}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderBrush}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Margin" Value="0,0,0,3"/>
+            <Setter Property="Padding" Value="5"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Expander">
+                        <Border Background="{TemplateBinding Background}" 
+                                BorderBrush="{TemplateBinding BorderBrush}" 
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="3">
+                            <DockPanel>
+                                <!-- Header -->
+                                <ToggleButton DockPanel.Dock="Top" 
+                                              IsChecked="{Binding IsExpanded, RelativeSource={RelativeSource TemplatedParent}}"
+                                              Background="Transparent" BorderThickness="0"
+                                              Padding="5,6" Cursor="Hand">
+                                    <ToggleButton.Template>
+                                        <ControlTemplate TargetType="ToggleButton">
+                                            <Border Background="{TemplateBinding Background}" Padding="{TemplateBinding Padding}">
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="Auto"/>
+                                                        <ColumnDefinition Width="*"/>
+                                                    </Grid.ColumnDefinitions>
+                                                    <!-- Arrow -->
+                                                    <TextBlock x:Name="Arrow" Text="▶" FontSize="10" 
+                                                               VerticalAlignment="Center" Margin="0,0,6,0"
+                                                               Foreground="{DynamicResource TextDimBrush}"
+                                                               RenderTransformOrigin="0.5,0.5">
+                                                        <TextBlock.RenderTransform>
+                                                            <RotateTransform x:Name="ArrowRotate" Angle="0"/>
+                                                        </TextBlock.RenderTransform>
+                                                    </TextBlock>
+                                                    <!-- Header Content -->
+                                                    <ContentPresenter Grid.Column="1" 
+                                                                      Content="{Binding Header, RelativeSource={RelativeSource AncestorType=Expander}}"
+                                                                      VerticalAlignment="Center"/>
+                                                </Grid>
+                                            </Border>
+                                            <ControlTemplate.Triggers>
+                                                <Trigger Property="IsChecked" Value="True">
+                                                    <Setter TargetName="Arrow" Property="Text" Value="▼"/>
+                                                </Trigger>
+                                                <Trigger Property="IsMouseOver" Value="True">
+                                                    <Setter Property="Background" Value="#30FFFFFF"/>
+                                                </Trigger>
+                                            </ControlTemplate.Triggers>
+                                        </ControlTemplate>
+                                    </ToggleButton.Template>
+                                </ToggleButton>
+                                <!-- Content -->
+                                <Border x:Name="ContentBorder" DockPanel.Dock="Bottom" 
+                                        Padding="{TemplateBinding Padding}" Visibility="Collapsed">
+                                    <ContentPresenter/>
+                                </Border>
+                            </DockPanel>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsExpanded" Value="True">
+                                <Setter TargetName="ContentBorder" Property="Visibility" Value="Visible"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Header with icon style -->
+        <Style x:Key="ExpanderHeader" TargetType="TextBlock">
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="FontSize" Value="12"/>
+        </Style>
+    </Window.Resources>
+
     <Grid>
         <Grid.RowDefinitions>
             <RowDefinition Height="*"/>
@@ -12,22 +94,130 @@
         </Grid.RowDefinitions>
         <Grid Grid.Row="0">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="220" MinWidth="180"/>
+                <ColumnDefinition Width="300" MinWidth="220"/>
                 <ColumnDefinition Width="5"/>
                 <ColumnDefinition Width="*"/>
                 <ColumnDefinition Width="5"/>
                 <ColumnDefinition Width="300" MinWidth="220"/>
             </Grid.ColumnDefinitions>
-            
+
             <!-- Left Panel - Brush and Tools -->
             <ScrollViewer Grid.Column="0" VerticalScrollBarVisibility="Auto">
                 <StackPanel Margin="5">
-                    <GroupBox Header="File">
+
+                    <!-- FILE - Always visible, important actions -->
+                    <Expander IsExpanded="True">
+                        <Expander.Header>
+                            <TextBlock Text="📁 File" Style="{StaticResource ExpanderHeader}"/>
+                        </Expander.Header>
                         <StackPanel>
                             <Button Content="New Scene (Ctrl+N)" Click="NewScene_Click"/>
                             <Button Content="Open Model (Ctrl+O)" Click="OpenModel_Click"/>
                             <Button Content="Save Model (Ctrl+S)" Click="SaveModel_Click" x:Name="btnSave" IsEnabled="False"/>
-                            <Separator Margin="0,5"/>
+                            <Separator Margin="0,8"/>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <Button x:Name="btnUndo" Content="↶ Undo" Click="Undo_Click" IsEnabled="False" Grid.Column="0" Margin="0,0,2,0"/>
+                                <Button x:Name="btnRedo" Content="↷ Redo" Click="Redo_Click" IsEnabled="False" Grid.Column="1" Margin="2,0,0,0"/>
+                            </Grid>
+                            <TextBlock x:Name="txtUndoStatus" Text="Ctrl+Z / Ctrl+Y" FontSize="10" Foreground="{DynamicResource TextDimBrush}" HorizontalAlignment="Center"/>
+                        </StackPanel>
+                    </Expander>
+
+                    <!-- TOOLS - Primary workflow -->
+                    <Expander IsExpanded="True">
+                        <Expander.Header>
+                            <TextBlock Text="🖌️ Paint Tools" Style="{StaticResource ExpanderHeader}"/>
+                        </Expander.Header>
+                        <StackPanel>
+                            <ToggleButton x:Name="btnPaintMode" Content="🎨 Enable Paint Mode (P)" Click="PaintMode_Click" Margin="0,0,0,8" ToolTip="Enable painting on mesh. When off, brush is hidden and painting is disabled."/>
+                            <TextBlock Text="B=Paint  E=Erase  C=Eyedrop" FontSize="10" Foreground="{DynamicResource TextDimBrush}" Margin="0,0,0,3"/>
+                            <TextBlock Text="Ctrl+Click=Mask  Ctrl+Alt=Unmask" FontSize="10" Foreground="{DynamicResource TextDimBrush}" Margin="0,0,0,5"/>
+                            <RadioButton x:Name="rbPaint" Content="Paint (B)" IsChecked="True" Checked="Tool_Changed" Tag="0" GroupName="Tools"/>
+                            <RadioButton x:Name="rbErase" Content="Erase (E)" Checked="Tool_Changed" Tag="1" GroupName="Tools"/>
+                            <Separator Margin="0,8"/>
+                            <TextBlock x:Name="txtActiveTool" Text="Active: Paint" FontWeight="Bold" Margin="0,0,0,5"/>
+                            <Button Content="Clear All Masks" Click="ClearMasks_Click"/>
+                            <Button Content="Clear All Paint" Click="ClearPaint_Click"/>
+                            <Button Content="Reset Subdivisions" Click="ResetSubdivisions_Click" ToolTip="Reset all triangles to single sub-triangle for fresh painting"/>
+                        </StackPanel>
+                    </Expander>
+
+                    <!-- BRUSH - Frequently adjusted -->
+                    <Expander IsExpanded="True">
+                        <Expander.Header>
+                            <TextBlock Text="⭕ Brush" Style="{StaticResource ExpanderHeader}"/>
+                        </Expander.Header>
+                        <StackPanel>
+                            <TextBlock x:Name="txtBrushSize" Text="Size: 0.500"/>
+                            <Slider x:Name="sliderBrushSize" Minimum="0.001" Maximum="50" Value="0.5" ValueChanged="BrushSize_Changed"/>
+                            <TextBlock Text="[ ] or Alt+Scroll to resize" FontSize="10" Foreground="{DynamicResource TextDimBrush}"/>
+                        </StackPanel>
+                    </Expander>
+
+                    <!-- COLORS - Important for painting -->
+                    <Expander IsExpanded="True">
+                        <Expander.Header>
+                            <TextBlock Text="🎨 Mesh Colors (1-8)" Style="{StaticResource ExpanderHeader}"/>
+                        </Expander.Header>
+                        <StackPanel>
+                            <TextBlock Text="Click to select, double-click to edit" FontSize="10" Foreground="{DynamicResource TextDimBrush}" Margin="0,0,0,3"/>
+                            <WrapPanel x:Name="colorPanel" Margin="0,0,0,5"/>
+                            <TextBlock x:Name="txtCurrentColor" Text="Current: 1" FontSize="11" Foreground="{DynamicResource TextDimBrush}"/>
+                        </StackPanel>
+                    </Expander>
+
+                    <!-- EXTRUDER LIMIT - Less frequent -->
+                    <Expander IsExpanded="False">
+                        <Expander.Header>
+                            <TextBlock Text="🔢 Extruder Limit" Style="{StaticResource ExpanderHeader}"/>
+                        </Expander.Header>
+                        <StackPanel>
+                            <TextBlock Text="Limit to extruders:" FontSize="11" Margin="0,0,0,2"/>
+                            <StackPanel Orientation="Horizontal">
+                                <Slider x:Name="sliderLimitExtruders" Minimum="1" Maximum="8" Value="8" Width="100" IsSnapToTickEnabled="True" TickFrequency="1" ValueChanged="LimitExtruders_Changed"/>
+                                <TextBlock x:Name="txtLimitExtruders" Text="8" Width="20" Margin="5,0,0,0" VerticalAlignment="Center"/>
+                            </StackPanel>
+                            <TextBlock Text="Smooth (dissolve regions &lt;):" FontSize="11" Margin="0,8,0,2"/>
+                            <StackPanel Orientation="Horizontal">
+                                <Slider x:Name="sliderSmoothRadius" Minimum="0" Maximum="500" Value="20" Width="100" IsSnapToTickEnabled="True" TickFrequency="10" ValueChanged="SmoothRadius_Changed"/>
+                                <TextBlock x:Name="txtSmoothRadius" Text="20" Width="35" Margin="5,0,0,0" VerticalAlignment="Center"/>
+                            </StackPanel>
+                            <Button Content="Apply Limit" Click="ApplyExtruderLimit_Click" Margin="0,8,0,0" Padding="8,4" ToolTip="Remap colors beyond limit, dissolve small regions, black out unused slots"/>
+                        </StackPanel>
+                    </Expander>
+
+                    <!-- DISPLAY - Occasional use -->
+                    <Expander IsExpanded="False">
+                        <Expander.Header>
+                            <TextBlock Text="👁️ Display" Style="{StaticResource ExpanderHeader}"/>
+                        </Expander.Header>
+                        <StackPanel>
+                            <CheckBox x:Name="chkWireframe" Content="Mesh Wireframe (W)" Checked="Display_Changed" Unchecked="Display_Changed"/>
+                            <CheckBox x:Name="chkSubdivisions" Content="Subdivision Edges" Checked="Display_Changed" Unchecked="Display_Changed"/>
+                            <CheckBox x:Name="chkUnlit" Content="Unlit / Flat (U)" Checked="Display_Changed" Unchecked="Display_Changed" ToolTip="No shading - flat colors for painting"/>
+                            <Separator Margin="0,4"/>
+                            <CheckBox x:Name="chkShowTexture" Content="Show Texture (T)" Checked="Display_Changed" Unchecked="Display_Changed" Margin="0,4,0,0"/>
+                            <StackPanel Orientation="Horizontal" Margin="15,4,0,0">
+                                <CheckBox x:Name="chkFlipH" Content="Flip H" Checked="Display_Changed" Unchecked="Display_Changed" IsEnabled="{Binding IsChecked, ElementName=chkShowTexture}" VerticalAlignment="Center"/>
+                                <CheckBox x:Name="chkFlipV" Content="Flip V" Checked="Display_Changed" Unchecked="Display_Changed" IsEnabled="{Binding IsChecked, ElementName=chkShowTexture}" Margin="15,0,0,0" VerticalAlignment="Center"/>
+                            </StackPanel>
+                            <CheckBox x:Name="chkPreviewQuantized" Content="Preview Quantized (Q)" Checked="PreviewQuantized_Changed" Unchecked="PreviewQuantized_Changed" Margin="0,4,0,0" IsEnabled="False" ToolTip="Preview quantized texture on mesh before projection"/>
+                            <Separator Margin="0,8"/>
+                            <Button Content="Frame Model (F)" Click="FrameModel_Click"/>
+                            <Button Content="Reset View (R)" Click="ResetView_Click"/>
+                        </StackPanel>
+                    </Expander>
+
+                    <!-- IMPORT/EXPORT SCALE - Rarely used -->
+                    <Expander IsExpanded="False">
+                        <Expander.Header>
+                            <TextBlock Text="📐 Scale Settings" Style="{StaticResource ExpanderHeader}"/>
+                        </Expander.Header>
+                        <StackPanel>
                             <TextBlock Text="Import Scale (OBJ):" FontSize="11" Margin="0,0,0,2"/>
                             <Grid>
                                 <Grid.ColumnDefinitions>
@@ -44,7 +234,7 @@
                                 </ComboBox>
                                 <TextBox x:Name="txtCustomImportScale" Grid.Column="1" Width="50" Text="1.0" Margin="5,0,0,0" Visibility="Collapsed" ToolTip="Custom import scale factor"/>
                             </Grid>
-                            <TextBlock Text="Export Scale (3MF):" FontSize="11" Margin="0,5,0,2"/>
+                            <TextBlock Text="Export Scale (3MF):" FontSize="11" Margin="0,8,0,2"/>
                             <Grid>
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*"/>
@@ -60,83 +250,116 @@
                                 </ComboBox>
                                 <TextBox x:Name="txtCustomExportScale" Grid.Column="1" Width="50" Text="1.0" Margin="5,0,0,0" Visibility="Collapsed" ToolTip="Custom export scale factor"/>
                             </Grid>
-                            <Separator Margin="0,5"/>
-                            <Grid>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="*"/>
-                                </Grid.ColumnDefinitions>
-                                <Button x:Name="btnUndo" Content="Undo" Click="Undo_Click" IsEnabled="False" Grid.Column="0" Margin="0,0,2,0"/>
-                                <Button x:Name="btnRedo" Content="Redo" Click="Redo_Click" IsEnabled="False" Grid.Column="1" Margin="2,0,0,0"/>
-                            </Grid>
-                            <TextBlock x:Name="txtUndoStatus" Text="Ctrl+Z / Ctrl+Y" FontSize="10" Foreground="{DynamicResource TextDimBrush}" HorizontalAlignment="Center"/>
                         </StackPanel>
-                    </GroupBox>
-                    <GroupBox Header="Tools">
-                        <StackPanel>
-                            <ToggleButton x:Name="btnPaintMode" Content="Enable Paint Mode (P)" Click="PaintMode_Click" Margin="0,0,0,8" ToolTip="Enable painting on mesh. When off, brush is hidden and painting is disabled."/>
-                            <TextBlock Text="B=Paint  E=Erase  C=Eyedrop" FontSize="10" Foreground="{DynamicResource TextDimBrush}" Margin="0,0,0,3"/>
-                            <TextBlock Text="Ctrl+Click=Mask  Ctrl+Alt=Unmask" FontSize="10" Foreground="{DynamicResource TextDimBrush}" Margin="0,0,0,5"/>
-                            <RadioButton x:Name="rbPaint" Content="Paint (B)" IsChecked="True" Checked="Tool_Changed" Tag="0" GroupName="Tools"/>
-                            <RadioButton x:Name="rbErase" Content="Erase (E)" Checked="Tool_Changed" Tag="1" GroupName="Tools"/>
-                            <Separator Margin="0,8"/>
-                            <TextBlock x:Name="txtActiveTool" Text="Active: Paint" FontWeight="Bold" Margin="0,0,0,5"/>
-                            <Button Content="Clear All Masks" Click="ClearMasks_Click"/>
-                            <Button Content="Clear All Paint" Click="ClearPaint_Click"/>
-                            <Button Content="Reset Subdivisions" Click="ResetSubdivisions_Click" ToolTip="Reset all triangles to single sub-triangle for fresh painting"/>
-                        </StackPanel>
-                    </GroupBox>
-                    <GroupBox Header="Brush/Mesh Colors (1-8)">
-                        <StackPanel>
-                            <TextBlock Text="Click to select, double-click to edit" FontSize="10" Foreground="{DynamicResource TextDimBrush}" Margin="0,0,0,3"/>
-                            <WrapPanel x:Name="colorPanel" Margin="0,0,0,5"/>
-                            <TextBlock x:Name="txtCurrentColor" Text="Current: 1" FontSize="11" Foreground="{DynamicResource TextDimBrush}"/>
-                            <TextBlock Text="(Changes apply to model immediately)" FontSize="9" Foreground="{DynamicResource TextDimBrush}"/>
-                            <Separator Margin="0,8"/>
-                            <TextBlock Text="Limit to extruders:" FontSize="11" Margin="0,0,0,2"/>
-                            <StackPanel Orientation="Horizontal">
-                                <Slider x:Name="sliderLimitExtruders" Minimum="1" Maximum="8" Value="8" Width="80" IsSnapToTickEnabled="True" TickFrequency="1" ValueChanged="LimitExtruders_Changed"/>
-                                <TextBlock x:Name="txtLimitExtruders" Text="8" Width="20" Margin="5,0,0,0" VerticalAlignment="Center"/>
-                            </StackPanel>
-                            <TextBlock Text="Smooth (dissolve regions &lt;):" FontSize="11" Margin="0,5,0,2"/>
-                            <StackPanel Orientation="Horizontal">
-                                <Slider x:Name="sliderSmoothRadius" Minimum="0" Maximum="500" Value="20" Width="80" IsSnapToTickEnabled="True" TickFrequency="10" ValueChanged="SmoothRadius_Changed"/>
-                                <TextBlock x:Name="txtSmoothRadius" Text="20" Width="35" Margin="5,0,0,0" VerticalAlignment="Center"/>
-                            </StackPanel>
-                            <Button Content="Apply Limit" Click="ApplyExtruderLimit_Click" Margin="0,5,0,0" Padding="8,4" ToolTip="Remap colors beyond limit, dissolve small regions, black out unused slots"/>
-                        </StackPanel>
-                    </GroupBox>
-                    <GroupBox Header="Brush">
-                        <StackPanel>
-                            <TextBlock x:Name="txtBrushSize" Text="Size: 0.500"/>
-                            <Slider x:Name="sliderBrushSize" Minimum="0.001" Maximum="50" Value="0.5" ValueChanged="BrushSize_Changed"/>
-                            <TextBlock Text="[ ] or Alt+Scroll to resize" FontSize="10" Foreground="{DynamicResource TextDimBrush}"/>
-                        </StackPanel>
-                    </GroupBox>
-                    <GroupBox Header="Display">
-                        <StackPanel>
-                            <CheckBox x:Name="chkWireframe" Content="Mesh Wireframe (W)" Checked="Display_Changed" Unchecked="Display_Changed"/>
-                            <CheckBox x:Name="chkSubdivisions" Content="Subdivision Edges" Checked="Display_Changed" Unchecked="Display_Changed"/>
-                            <CheckBox x:Name="chkShowTexture" Content="Show Texture (T)" Checked="Display_Changed" Unchecked="Display_Changed" Margin="0,4,0,0"/>
-                            <StackPanel Orientation="Horizontal" Margin="15,4,0,0">
-                                <CheckBox x:Name="chkFlipH" Content="Flip H" Checked="Display_Changed" Unchecked="Display_Changed" IsEnabled="{Binding IsChecked, ElementName=chkShowTexture}" VerticalAlignment="Center"/>
-                                <CheckBox x:Name="chkFlipV" Content="Flip V" Checked="Display_Changed" Unchecked="Display_Changed" IsEnabled="{Binding IsChecked, ElementName=chkShowTexture}" Margin="15,0,0,0" VerticalAlignment="Center"/>
-                            </StackPanel>
-                            <CheckBox x:Name="chkPreviewQuantized" Content="Preview Quantized (Q)" Checked="PreviewQuantized_Changed" Unchecked="PreviewQuantized_Changed" Margin="0,4,0,0" IsEnabled="False" ToolTip="Preview quantized texture on mesh before projection"/>
-                            <Separator Margin="0,8"/>
-                            <Button Content="Frame Model (F)" Click="FrameModel_Click"/>
-                            <Button Content="Reset View (R)" Click="ResetView_Click"/>
-                        </StackPanel>
-                    </GroupBox>
+                    </Expander>
+
+                    <!-- MESH INFO - Compact -->
+                    <Expander IsExpanded="True">
+                        <Expander.Header>
+                            <TextBlock Text="ℹ️ Mesh Info" Style="{StaticResource ExpanderHeader}"/>
+                        </Expander.Header>
+                        <TextBlock x:Name="txtMeshInfo" Text="No mesh loaded" TextWrapping="Wrap" Foreground="{DynamicResource TextDimBrush}"/>
+                    </Expander>
+
                 </StackPanel>
             </ScrollViewer>
-            
+
             <GridSplitter Grid.Column="1" Width="5" HorizontalAlignment="Stretch" Background="{DynamicResource ControlBorderBrush}"/>
-            
+
             <!-- Center - Viewport -->
             <Border Grid.Column="2" BorderBrush="{DynamicResource ControlBorderBrush}" BorderThickness="1">
                 <Grid>
-                    <WindowsFormsHost x:Name="viewportHost"/>
+                    <!-- Modern gradient background (always visible behind OpenGL) -->
+                    <Border>
+                        <Border.Background>
+                            <RadialGradientBrush Center="0.5,0.4" RadiusX="0.8" RadiusY="0.8">
+                                <GradientStop Color="#FF252528" Offset="0"/>
+                                <GradientStop Color="#FF1a1a1c" Offset="0.7"/>
+                                <GradientStop Color="#FF141416" Offset="1"/>
+                            </RadialGradientBrush>
+                        </Border.Background>
+                    </Border>
+                    
+                    <!-- OpenGL Viewport - HIDDEN when no model loaded -->
+                    <WindowsFormsHost x:Name="viewportHost" Visibility="Collapsed"/>
+                    
+                    <!-- Empty State Overlay - Shows when no model loaded -->
+                    <Border x:Name="emptyStateOverlay" Visibility="Visible" 
+                            MouseLeftButtonDown="EmptyState_Click" Cursor="Hand">
+                        <Grid>
+                            <!-- Subtle animated gradient feel -->
+                            <Border>
+                                <Border.Background>
+                                    <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+                                        <GradientStop Color="#00000000" Offset="0"/>
+                                        <GradientStop Color="#15FFFFFF" Offset="0.5"/>
+                                        <GradientStop Color="#00000000" Offset="1"/>
+                                    </LinearGradientBrush>
+                                </Border.Background>
+                            </Border>
+                            
+                            <!-- Subtle grid pattern -->
+                            <Border Opacity="0.03">
+                                <Border.Background>
+                                    <DrawingBrush TileMode="Tile" Viewport="0,0,30,30" ViewportUnits="Absolute">
+                                        <DrawingBrush.Drawing>
+                                            <GeometryDrawing>
+                                                <GeometryDrawing.Geometry>
+                                                    <GeometryGroup>
+                                                        <EllipseGeometry Center="15,15" RadiusX="1" RadiusY="1"/>
+                                                    </GeometryGroup>
+                                                </GeometryDrawing.Geometry>
+                                                <GeometryDrawing.Brush>
+                                                    <SolidColorBrush Color="White"/>
+                                                </GeometryDrawing.Brush>
+                                            </GeometryDrawing>
+                                        </DrawingBrush.Drawing>
+                                    </DrawingBrush>
+                                </Border.Background>
+                            </Border>
+                            
+                            <!-- Content -->
+                            <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
+                                <!-- 3D Box Icon -->
+                                <Border Width="80" Height="80" Margin="0,0,0,20">
+                                    <Viewbox>
+                                        <Canvas Width="24" Height="24">
+                                            <Path Fill="{DynamicResource TextDimBrush}" Opacity="0.4"
+                                                  Data="M21,16.5C21,16.88 20.79,17.21 20.47,17.38L12.57,21.82C12.41,21.94 12.21,22 12,22C11.79,22 11.59,21.94 11.43,21.82L3.53,17.38C3.21,17.21 3,16.88 3,16.5V7.5C3,7.12 3.21,6.79 3.53,6.62L11.43,2.18C11.59,2.06 11.79,2 12,2C12.21,2 12.41,2.06 12.57,2.18L20.47,6.62C20.79,6.79 21,7.12 21,7.5V16.5M12,4.15L5,8.09V15.91L12,19.85L19,15.91V8.09L12,4.15Z"/>
+                                        </Canvas>
+                                    </Viewbox>
+                                </Border>
+                                
+                                <!-- Main text -->
+                                <TextBlock Text="LOAD MODEL" FontSize="28" FontWeight="Light" 
+                                           Foreground="{DynamicResource TextDimBrush}" Opacity="0.7"
+                                           HorizontalAlignment="Center" Margin="0,0,0,8"/>
+                                
+                                <!-- Subtitle -->
+                                <TextBlock Text="Drop a file or press Ctrl+O" FontSize="13" 
+                                           Foreground="{DynamicResource TextDimBrush}" Opacity="0.4"
+                                           HorizontalAlignment="Center" Margin="0,0,0,20"/>
+                                
+                                <!-- Supported formats in pills -->
+                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                    <Border Background="#20FFFFFF" CornerRadius="10" Padding="10,4" Margin="3,0">
+                                        <TextBlock Text=".3mf" FontSize="11" Foreground="{DynamicResource TextDimBrush}" Opacity="0.6"/>
+                                    </Border>
+                                    <Border Background="#20FFFFFF" CornerRadius="10" Padding="10,4" Margin="3,0">
+                                        <TextBlock Text=".obj" FontSize="11" Foreground="{DynamicResource TextDimBrush}" Opacity="0.6"/>
+                                    </Border>
+                                    <Border Background="#20FFFFFF" CornerRadius="10" Padding="10,4" Margin="3,0">
+                                        <TextBlock Text=".glb" FontSize="11" Foreground="{DynamicResource TextDimBrush}" Opacity="0.6"/>
+                                    </Border>
+                                    <Border Background="#20FFFFFF" CornerRadius="10" Padding="10,4" Margin="3,0">
+                                        <TextBlock Text=".gltf" FontSize="11" Foreground="{DynamicResource TextDimBrush}" Opacity="0.6"/>
+                                    </Border>
+                                </StackPanel>
+                            </StackPanel>
+                        </Grid>
+                    </Border>
+                    
+                    <!-- Loading Overlay -->
                     <Border x:Name="loadingOverlay" Background="#CC000000" Visibility="Collapsed">
                         <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
                             <TextBlock x:Name="txtLoadingStatus" Text="Loading..." FontSize="18" Foreground="White" HorizontalAlignment="Center" Margin="0,0,0,10"/>
@@ -147,16 +370,21 @@
                     </Border>
                 </Grid>
             </Border>
-            
+
             <GridSplitter Grid.Column="3" Width="5" HorizontalAlignment="Stretch" Background="{DynamicResource ControlBorderBrush}"/>
-            
+
             <!-- Right Panel - Texture and Projection Settings -->
             <ScrollViewer Grid.Column="4" VerticalScrollBarVisibility="Auto">
                 <StackPanel Margin="5">
-                    <GroupBox Header="Texture">
+
+                    <!-- TEXTURE - Primary on this panel -->
+                    <Expander IsExpanded="True">
+                        <Expander.Header>
+                            <TextBlock Text="🖼️ Texture" Style="{StaticResource ExpanderHeader}"/>
+                        </Expander.Header>
                         <StackPanel>
                             <Button Content="Load Texture" Click="LoadTexture_Click"/>
-                            <Border x:Name="textureBorder" Height="180" Margin="0,5,0,0" BorderBrush="{DynamicResource ControlBorderBrush}" BorderThickness="1" Background="#FF1A1A1A" ClipToBounds="True">
+                            <Border x:Name="textureBorder" Height="180" Margin="0,5,0,0" BorderBrush="{DynamicResource ControlBorderBrush}" BorderThickness="1" Background="{DynamicResource WindowBackgroundBrush}" ClipToBounds="True">
                                 <Grid>
                                     <TextBlock x:Name="txtNoTexture" Text="No texture loaded" HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="{DynamicResource TextDimBrush}"/>
                                     <Image x:Name="texturePreview" Stretch="Uniform" RenderOptions.BitmapScalingMode="NearestNeighbor"/>
@@ -169,10 +397,13 @@
                                 <Button x:Name="btnExportQuantized" Content="Export" Click="ExportQuantized_Click" Margin="5,0,0,0" IsEnabled="False" Padding="8,2" ToolTip="Export quantized image to PNG"/>
                             </StackPanel>
                         </StackPanel>
-                    </GroupBox>
-                    
-                    <!-- Projection Settings -->
-                    <GroupBox Header="Projection Settings">
+                    </Expander>
+
+                    <!-- PROJECTION - Main action -->
+                    <Expander IsExpanded="True">
+                        <Expander.Header>
+                            <TextBlock Text="📤 Projection" Style="{StaticResource ExpanderHeader}"/>
+                        </Expander.Header>
                         <StackPanel>
                             <TextBlock Text="Subdivision Depth:" Margin="0,0,0,2"/>
                             <Grid>
@@ -184,21 +415,27 @@
                                 <TextBlock x:Name="txtProjSubdiv" Text="4" Grid.Column="1" Width="20" TextAlignment="Right" Margin="5,0,0,0"/>
                             </Grid>
                             <TextBlock Text="Higher = more detail, larger file (8+ slow)" FontSize="10" Foreground="{DynamicResource TextDimBrush}" Margin="0,0,0,8"/>
-                            <Button Content="Project Texture to Mesh" Click="ProjectTexture_Click" x:Name="btnProject" IsEnabled="False"/>
+                            <Button Content="▶ Project Texture to Mesh" Click="ProjectTexture_Click" x:Name="btnProject" IsEnabled="False" FontWeight="SemiBold"/>
                         </StackPanel>
-                    </GroupBox>
-                    
-                    <!-- Color Palette -->
-                    <GroupBox Header="Color Palette">
+                    </Expander>
+
+                    <!-- COLOR PALETTE - Shows after quantize -->
+                    <Expander IsExpanded="True">
+                        <Expander.Header>
+                            <TextBlock Text="🎨 Quantized Palette" Style="{StaticResource ExpanderHeader}"/>
+                        </Expander.Header>
                         <StackPanel>
                             <WrapPanel x:Name="quantizedPalettePanel" Margin="0,0,0,5"/>
                             <CheckBox x:Name="chkLockPalette" Content="Lock Palette" ToolTip="Keep current colors when re-quantizing. Only color regions will update, not the colors themselves." Margin="0,0,0,5"/>
                             <Button x:Name="btnResetQuantizedColors" Content="Reset to Original" Click="ResetQuantizedColors_Click" IsEnabled="False" Padding="5,2"/>
                         </StackPanel>
-                    </GroupBox>
-                    
-                    <!-- Quantization Settings -->
-                    <GroupBox Header="Quantization">
+                    </Expander>
+
+                    <!-- QUANTIZATION SETTINGS -->
+                    <Expander IsExpanded="True">
+                        <Expander.Header>
+                            <TextBlock Text="⚙️ Quantization" Style="{StaticResource ExpanderHeader}"/>
+                        </Expander.Header>
                         <StackPanel>
                             <Grid>
                                 <Grid.ColumnDefinitions>
@@ -206,7 +443,7 @@
                                     <ColumnDefinition Width="Auto"/>
                                     <ColumnDefinition Width="Auto"/>
                                 </Grid.ColumnDefinitions>
-                                <ToggleButton x:Name="btnAutoQuantize" Content="Auto Quantize" Click="AutoQuantize_Click" IsEnabled="False" ToolTip="When enabled, changes to settings auto-update the quantized preview"/>
+                                <ToggleButton x:Name="btnAutoQuantize" Content="Auto" Click="AutoQuantize_Click" IsEnabled="False" ToolTip="When enabled, changes to settings auto-update the quantized preview"/>
                                 <TextBlock x:Name="txtProcessing" Text="⏳" Grid.Column="1" Visibility="Collapsed" VerticalAlignment="Center" Margin="8,0" FontSize="14" ToolTip="Processing..."/>
                                 <Button x:Name="btnQuantize" Content="Quantize" Grid.Column="2" Click="Quantize_Click" IsEnabled="False" Margin="5,0,0,0" Padding="10,2"/>
                             </Grid>
@@ -247,10 +484,13 @@
                                 <TextBlock x:Name="txtPopularityWeight" Text="0.5" Grid.Column="1" Width="25" TextAlignment="Right" Margin="5,0,0,0"/>
                             </Grid>
                         </StackPanel>
-                    </GroupBox>
-                    
-                    <!-- Image Preprocessing - Advanced options -->
-                    <GroupBox Header="Image Preprocessing">
+                    </Expander>
+
+                    <!-- IMAGE PREPROCESSING - Advanced, collapsed by default -->
+                    <Expander IsExpanded="False">
+                        <Expander.Header>
+                            <TextBlock Text="🔧 Image Preprocessing" Style="{StaticResource ExpanderHeader}"/>
+                        </Expander.Header>
                         <StackPanel>
                             <TextBlock Text="Gamma:" ToolTip="&lt;1 darker midtones, &gt;1 lighter midtones"/>
                             <Grid>
@@ -288,7 +528,7 @@
                                 <Slider x:Name="sliderSaturation" Minimum="0" Maximum="2.0" Value="1.0" TickFrequency="0.1" ValueChanged="QuantizeParam_Changed"/>
                                 <TextBlock x:Name="txtSaturation" Text="1.0" Grid.Column="1" Width="25" TextAlignment="Right" Margin="5,0,0,0"/>
                             </Grid>
-                            <Separator Margin="0,6"/>
+                            <Separator Margin="0,8"/>
                             <TextBlock Text="Shadow Compensation" FontWeight="SemiBold" Margin="0,0,0,3"/>
                             <CheckBox x:Name="chkNormalizeLum" Content="Normalize Luminance" Checked="QuantizeCheckbox_Changed" Unchecked="QuantizeCheckbox_Changed" ToolTip="Flattens all colors to same brightness - best for extracting pure hues from shadowed images" Margin="0,2,0,0"/>
                             <TextBlock Text="Shadow Lift:" Margin="0,5,0,0" ToolTip="Raises dark areas while preserving highlights"/>
@@ -310,23 +550,23 @@
                                 <TextBlock x:Name="txtHighlightCompress" Text="0.0" Grid.Column="1" Width="25" TextAlignment="Right" Margin="5,0,0,0"/>
                             </Grid>
                         </StackPanel>
-                    </GroupBox>
-                    
-                    <GroupBox Header="Mesh Info">
-                        <TextBlock x:Name="txtMeshInfo" Text="No mesh loaded" TextWrapping="Wrap" Foreground="{DynamicResource TextDimBrush}"/>
-                    </GroupBox>
+                    </Expander>
+
                 </StackPanel>
             </ScrollViewer>
         </Grid>
-        
+
+        <!-- Status Bar with Version -->
         <Border Grid.Row="1" Background="{DynamicResource ControlBackgroundBrush}" BorderBrush="{DynamicResource ControlBorderBrush}" BorderThickness="0,1,0,0">
             <Grid Margin="5,3">
                 <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
-                <TextBlock x:Name="txtStatus" Text="Ready - Open a model (Ctrl+O)"/>
-                <TextBlock Text="Hold M for Mask | Shift+M for Unmask" Grid.Column="1" Foreground="{DynamicResource TextDimBrush}" FontSize="10"/>
+                <TextBlock Text="v1.1 (2025-01-05)" Foreground="{DynamicResource TextDimBrush}" FontSize="10" VerticalAlignment="Center" Margin="0,0,15,0"/>
+                <TextBlock x:Name="txtStatus" Grid.Column="1" Text="Ready - Open a model (Ctrl+O)"/>
+                <TextBlock Text="Hold M for Mask | Shift+M for Unmask" Grid.Column="2" Foreground="{DynamicResource TextDimBrush}" FontSize="10"/>
             </Grid>
         </Border>
     </Grid>

@@ -12,9 +12,9 @@ public class MeshRenderer : IDisposable
     private int _vertCount, _wireCount, _subdivCount;
     
     // Colored shader uniforms
-    private int _uMVP, _uModel, _uLightDir, _uViewPos;
+    private int _uMVP, _uModel, _uLightDir, _uViewPos, _uUnlit;
     // Textured shader uniforms
-    private int _uMVPTex, _uModelTex, _uLightDirTex, _uViewPosTex, _uTex, _uFlipH, _uFlipV;
+    private int _uMVPTex, _uModelTex, _uLightDirTex, _uViewPosTex, _uTex, _uFlipH, _uFlipV, _uUnlitTex;
     // Wire uniforms
     private int _uWireMVP, _uWireColor;
     
@@ -65,7 +65,7 @@ public class MeshRenderer : IDisposable
 
     private void CreateShaders()
     {
-        // Colored mesh shader
+        // Colored mesh shader - improved lighting for painting/sculpting
         const string vsCol = @"#version 330 core
 layout(location=0) in vec3 aPos;
 layout(location=1) in vec3 aNorm;
@@ -81,21 +81,53 @@ void main() {
         const string fsCol = @"#version 330 core
 in vec3 vNorm, vCol, vWorldPos;
 uniform vec3 uLightDir, uViewPos;
+uniform int uUnlit;
 out vec4 FragColor;
 void main() {
+    // Unlit mode - flat color, no shading (best for painting)
+    if (uUnlit == 1) {
+        FragColor = vec4(vCol, 1.0);
+        return;
+    }
+    
     vec3 N = normalize(vNorm);
-    vec3 L = normalize(-uLightDir);
-    float diff = max(dot(N, L), 0.0) * 0.7;
-    float amb = 0.25;
-    FragColor = vec4(vCol * (amb + diff), 1.0);
+    vec3 viewDir = normalize(uViewPos - vWorldPos);
+    
+    // Camera-relative key light (follows camera, slightly offset)
+    vec3 keyLightDir = normalize(viewDir + vec3(0.2, 0.3, 0.0));
+    float keyDiff = dot(N, keyLightDir);
+    // Half-Lambert for softer shadows
+    keyDiff = keyDiff * 0.4 + 0.6;
+    vec3 keyLight = vec3(1.0, 0.98, 0.95) * keyDiff * 0.55;
+    
+    // Fill light from opposite side (also camera-relative)
+    vec3 fillLightDir = normalize(viewDir + vec3(-0.5, 0.1, 0.3));
+    float fillDiff = max(dot(N, fillLightDir), 0.0);
+    fillDiff = fillDiff * 0.5 + 0.5;
+    vec3 fillLight = vec3(0.8, 0.85, 1.0) * fillDiff * 0.25;
+    
+    // Rim/back light for edge definition
+    float rim = 1.0 - max(dot(viewDir, N), 0.0);
+    rim = pow(rim, 2.5) * 0.2;
+    vec3 rimLight = vec3(1.0) * rim;
+    
+    // Hemisphere ambient (sky/ground)
+    float hemi = N.y * 0.5 + 0.5;
+    vec3 ambient = mix(vec3(0.3, 0.28, 0.28), vec3(0.4, 0.42, 0.45), hemi) * 0.4;
+    
+    vec3 totalLight = ambient + keyLight + fillLight + rimLight;
+    vec3 result = vCol * totalLight;
+    
+    FragColor = vec4(result, 1.0);
 }";
         _prog = CreateProgram(vsCol, fsCol);
         _uMVP = GL.GetUniformLocation(_prog, "uMVP");
         _uModel = GL.GetUniformLocation(_prog, "uModel");
         _uLightDir = GL.GetUniformLocation(_prog, "uLightDir");
         _uViewPos = GL.GetUniformLocation(_prog, "uViewPos");
+        _uUnlit = GL.GetUniformLocation(_prog, "uUnlit");
         
-        // Textured mesh shader - NOTE: Y is flipped by default (1.0 - uv.y)
+        // Textured mesh shader - improved lighting
         const string vsTex = @"#version 330 core
 layout(location=0) in vec3 aPos;
 layout(location=1) in vec3 aNorm;
@@ -116,17 +148,48 @@ in vec2 vUV;
 uniform vec3 uLightDir, uViewPos;
 uniform sampler2D uTex;
 uniform bool uFlipH, uFlipV;
+uniform int uUnlit;
 out vec4 FragColor;
 void main() {
     vec2 uv = vUV;
     if (uFlipH) uv.x = 1.0 - uv.x;
     if (uFlipV) uv.y = 1.0 - uv.y;
     vec3 texCol = texture(uTex, uv).rgb;
+    
+    // Unlit mode
+    if (uUnlit == 1) {
+        FragColor = vec4(texCol, 1.0);
+        return;
+    }
+    
     vec3 N = normalize(vNorm);
-    vec3 L = normalize(-uLightDir);
-    float diff = max(dot(N, L), 0.0) * 0.7;
-    float amb = 0.25;
-    FragColor = vec4(texCol * (amb + diff), 1.0);
+    vec3 viewDir = normalize(uViewPos - vWorldPos);
+    
+    // Camera-relative key light
+    vec3 keyLightDir = normalize(viewDir + vec3(0.2, 0.3, 0.0));
+    float keyDiff = dot(N, keyLightDir);
+    keyDiff = keyDiff * 0.4 + 0.6;
+    vec3 keyLight = vec3(1.0, 0.98, 0.95) * keyDiff * 0.55;
+    
+    // Fill light
+    vec3 fillLightDir = normalize(viewDir + vec3(-0.5, 0.1, 0.3));
+    float fillDiff = max(dot(N, fillLightDir), 0.0);
+    fillDiff = fillDiff * 0.5 + 0.5;
+    vec3 fillLight = vec3(0.8, 0.85, 1.0) * fillDiff * 0.25;
+    
+    // Rim light
+    float rim = 1.0 - max(dot(viewDir, N), 0.0);
+    rim = pow(rim, 2.5) * 0.2;
+    vec3 rimLight = vec3(1.0) * rim;
+    
+    // Hemisphere ambient
+    float hemi = N.y * 0.5 + 0.5;
+    vec3 ambient = mix(vec3(0.3, 0.28, 0.28), vec3(0.4, 0.42, 0.45), hemi) * 0.4;
+    
+    vec3 totalLight = ambient + keyLight + fillLight + rimLight;
+    vec3 result = texCol * totalLight;
+    
+    FragColor = vec4(result, 1.0);
 }";
         _progTex = CreateProgram(vsTex, fsTex);
         _uMVPTex = GL.GetUniformLocation(_progTex, "uMVP");
@@ -136,6 +199,7 @@ void main() {
         _uTex = GL.GetUniformLocation(_progTex, "uTex");
         _uFlipH = GL.GetUniformLocation(_progTex, "uFlipH");
         _uFlipV = GL.GetUniformLocation(_progTex, "uFlipV");
+        _uUnlitTex = GL.GetUniformLocation(_progTex, "uUnlit");
         
         // Wireframe shader
         const string vsWire = "#version 330 core\nlayout(location=0) in vec3 aPos;\nuniform mat4 uMVP;\nvoid main(){gl_Position=uMVP*vec4(aPos,1);}";
@@ -270,7 +334,7 @@ void main() {
     }
 
     public void Draw(Matrix4x4 mvp, Matrix4x4 model, Vector3 lightDir, Vector3 viewPos, 
-                     int textureId, bool showTexture, bool flipH, bool flipV)
+                     int textureId, bool showTexture, bool flipH, bool flipV, bool unlit = false)
     {
         if (_vertCount == 0) return;
         
@@ -283,6 +347,7 @@ void main() {
             GL.Uniform3(_uViewPosTex, viewPos.X, viewPos.Y, viewPos.Z);
             GL.Uniform1(_uFlipH, flipH ? 1 : 0);
             GL.Uniform1(_uFlipV, flipV ? 1 : 0);
+            GL.Uniform1(_uUnlitTex, unlit ? 1 : 0);
             GL.ActiveTexture(TextureUnit.Texture0);
             GL.BindTexture(TextureTarget.Texture2D, textureId);
             GL.Uniform1(_uTex, 0);
@@ -294,6 +359,7 @@ void main() {
             GL.UniformMatrix4(_uModel, 1, false, ToFloats(model));
             GL.Uniform3(_uLightDir, lightDir.X, lightDir.Y, lightDir.Z);
             GL.Uniform3(_uViewPos, viewPos.X, viewPos.Y, viewPos.Z);
+            GL.Uniform1(_uUnlit, unlit ? 1 : 0);
         }
         
         GL.BindVertexArray(_vao);
@@ -336,6 +402,13 @@ void main() {
         m.M31, m.M32, m.M33, m.M34,
         m.M41, m.M42, m.M43, m.M44
     };
+
+    public void Clear()
+    {
+        _vertCount = 0;
+        _wireCount = 0;
+        _subdivCount = 0;
+    }
 
     public void Dispose()
     {
