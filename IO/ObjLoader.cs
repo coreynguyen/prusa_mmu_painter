@@ -20,6 +20,10 @@ public static class ObjLoader
         var faces = new List<(int[] vIdx, int[] uvIdx)>();
         string baseDir = Path.GetDirectoryName(filepath) ?? "";
         string? mtlFile = null;
+        
+        // ZBrush MRGB polypaint data
+        var mrgbColors = new List<Vector3>();
+        bool hasMrgbData = false;
 
         progress?.Report(("Reading file...", 0));
         var lines = File.ReadAllLines(filepath);
@@ -32,7 +36,17 @@ public static class ObjLoader
             if (i % 50000 == 0) progress?.Report(("Parsing...", 0.1f + 0.3f * i / total));
 
             var line = lines[i].Trim();
-            if (string.IsNullOrEmpty(line) || line[0] == '#') continue;
+            if (string.IsNullOrEmpty(line)) continue;
+            
+            // Check for ZBrush MRGB polypaint data (comes as a comment line)
+            if (line.StartsWith("#MRGB "))
+            {
+                ParseMrgbLine(line.Substring(6), mrgbColors);
+                hasMrgbData = true;
+                continue;
+            }
+            
+            if (line[0] == '#') continue; // Skip other comments
 
             if (line.StartsWith("mtllib "))
             {
@@ -94,6 +108,20 @@ public static class ObjLoader
                         : Array.Empty<int>();
                     faces.Add((triV, triUV));
                 }
+            }
+        }
+
+        // Apply ZBrush MRGB colors if present and no inline vertex colors
+        if (hasMrgbData && !hasVertexColors && mrgbColors.Count > 0)
+        {
+            progress?.Report(("Applying ZBrush polypaint colors...", 0.42f));
+            hasVertexColors = true;
+            
+            // Apply MRGB colors to vertex color list
+            for (int i = 0; i < vertices.Count; i++)
+            {
+                if (i < mrgbColors.Count)
+                    vertexColors[i] = mrgbColors[i];
             }
         }
 
@@ -184,6 +212,41 @@ public static class ObjLoader
         mesh.ComputeNormals();
         progress?.Report(("Complete", 1.0f));
         return mesh;
+    }
+
+    /// <summary>
+    /// Parse a ZBrush MRGB line containing vertex colors in MMRRGGBB hex format.
+    /// Up to 64 colors per line, 8 hex chars each.
+    /// MM = mask (ignored), RR/GG/BB = vertex color (0-255)
+    /// </summary>
+    private static void ParseMrgbLine(string hexData, List<Vector3> colors)
+    {
+        // Remove any whitespace
+        hexData = hexData.Replace(" ", "").Replace("\r", "").Replace("\n", "");
+        
+        // Each color is 8 hex chars: MMRRGGBB
+        for (int i = 0; i + 8 <= hexData.Length; i += 8)
+        {
+            try
+            {
+                // Skip mask bytes (first 2 chars)
+                // string mask = hexData.Substring(i, 2);
+                string rHex = hexData.Substring(i + 2, 2);
+                string gHex = hexData.Substring(i + 4, 2);
+                string bHex = hexData.Substring(i + 6, 2);
+                
+                int r = Convert.ToInt32(rHex, 16);
+                int g = Convert.ToInt32(gHex, 16);
+                int b = Convert.ToInt32(bHex, 16);
+                
+                colors.Add(new Vector3(r / 255f, g / 255f, b / 255f));
+            }
+            catch
+            {
+                // Skip malformed entries
+                colors.Add(new Vector3(0.5f, 0.5f, 0.5f));
+            }
+        }
     }
 
     /// <summary>
